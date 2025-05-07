@@ -3,6 +3,7 @@
 
 # importing libraries
 from Bio import Entrez
+Entrez.api_key = "dde04e5b368b5a43e07ab39bec7b31100e08"
 from metapub.convert import pmid2doi
 import os
 from bs4 import BeautifulSoup,  SoupStrainer
@@ -56,13 +57,13 @@ def get_dois(plist: list[int]) -> tuple[list[int], list[str]]:
 
 
 def get_urls(plist: list[int])-> list[str]:
-    """converts each DOI to a valid URL"""
+    """converts each pmid to a valid URL"""
     url_list = []
     for p in range(len(plist)):
         prefix = 'https://www.ncbi.nlm.nih.gov/pmc/articles/pmid/'
         new_url = prefix + plist[p]
         url_list.append(new_url)
-    #print(url_list)
+    print(url_list)
     return url_list
 
 
@@ -80,6 +81,7 @@ def get_tables(url, pmid) -> None:
     try:
         with urllib.request.urlopen(req) as u:
             html = u.read().decode('utf-8')
+            content_url = u.url
     except urllib.error.HTTPError as e:
         print(f"HTTP Error {e.code}: {e.reason}")
         return
@@ -88,18 +90,22 @@ def get_tables(url, pmid) -> None:
     for link in soup.find_all('a', href=True):
         href = link['href']
         if any(href.lower().endswith(x) for x in ['.csv', '.xls', '.xlsx', '.tsv', '.txt']):
-            full_url = urljoin(url, href)
+            full_url = urljoin(content_url, href)
             filename = os.path.join(new_path, href.rsplit('/', 1)[-1])
             if os.path.isfile(filename):
                 print(f"File '{filename}' already exists. Skipping file creation.")
             else:
                 print(f"Downloading {full_url} to {filename}...")
+# switch to using requests instead of urllib, which was failing
                 try:
-                    urllib.request.urlretrieve(full_url, filename)
-                    print("Done.")
-                except Exception as e:
-                    print(f"Error downloading {full_url}: {e}")
-    
+                    response = requests.get(full_url, headers=headers)
+                    response.raise_for_status()
+                    with open(filename, 'wb') as fw:
+                        fw.write(response.content)
+                except requests.exceptions.RequestException as e:
+                    print(f"Error fetching the page: {e}")
+                    return None
+
     if not os.listdir(new_path):
         print("No files were downloaded.")
     return
@@ -116,6 +122,10 @@ def get_pdfs(url):
     try:
         response = requests.get(url, headers=headers)
         response.raise_for_status()
+        # for reasons that I don't understand response.url is not the same as url used in the requests.get() call, 
+        # and yet the fields indicating a redirect are False
+        # if we get here, make use of the url set in the response
+        content_url = response.url
         html = response.text
     except requests.exceptions.RequestException as e:
         print(f"Error fetching the page: {e}")
@@ -136,7 +146,7 @@ def get_pdfs(url):
             print("No article PDF link found on the page.")
             return None
 
-    pdf_url = urljoin(url, pdf_url)
+    pdf_url = urljoin(content_url, pdf_url)
     filename_part = pdf_url.split('=')[-1] if '=' in pdf_url else pdf_url.split('/')[-1]
     if not filename_part.lower().endswith('.pdf'):
         filename_part += '.pdf'
@@ -157,6 +167,9 @@ def get_pdfs(url):
     except requests.exceptions.RequestException as e:
         print(f"Error downloading PDF: {e}")
         return None
+# this is an example of a real link:  https://pmc.ncbi.nlm.nih.gov/articles/PMC10499611/pdf/41586_2023_Article_6473.pdf
+# this is what we're currently creating: https://pmc.ncbi.nlm.nih.gov/pmc/articles/pmid/pdf/41586_2023_Article_6473.pdf
+# don't know where the 10499611 is coming from at the moment (see content_url)
 
 def get_metadata(plist: list[int], dlist: list[str]):
     fetch = PubMedFetcher()
@@ -193,6 +206,8 @@ def get_metadata(plist: list[int], dlist: list[str]):
 
     # Export the merged DataFrame to a CSV file
     main_dir = 'data'
+    if not os.path.isdir(main_dir):
+        os.mkdir(main_dir)
     file_path = os.path.join(main_dir, 'asd_article_metadata.csv')
     if os.path.isfile(file_path):
         print(f"File '{file_path}' already exists. Overwriting it.")
@@ -204,9 +219,14 @@ def get_metadata(plist: list[int], dlist: list[str]):
 
 
 def main():
+    # get_search_result has the predefined search term, and prompts on the console for the user email address
     search_data = get_search_result()
+    # get_pmids just extracts the pmids from the structure returned
     pmid_data = get_pmids(search_data)
+    # get_dois uses Entrez to extract the associated doi resource names and is working
     valid_pmids, doi_data = get_dois(pmid_data)
+    # get_metadata is working fine. It retrieves a lot of metadata separately into DataFrames, 
+    # then merges this into a master DataFrame and saves it as a csv file
     get_metadata(valid_pmids, doi_data)
     url_data = get_urls(valid_pmids)
     for u in url_data:
