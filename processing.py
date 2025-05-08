@@ -61,6 +61,8 @@ def get_urls(plist: list[int])-> list[str]:
     url_list = []
     for p in range(len(plist)):
         prefix = 'https://www.ncbi.nlm.nih.gov/pmc/articles/pmid/'
+#                  https://www.ncbi.nlm.nih.gov/pmc/articles/PMC<PMC_ID>/pdf/
+
         new_url = prefix + plist[p]
         url_list.append(new_url)
     print(url_list)
