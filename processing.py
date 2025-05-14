@@ -83,12 +83,10 @@ def get_urls(plist: list[int])-> list[str]:
     return url_list
 
 
-def get_tables(url, pmid) -> None:
+def get_tables(url:str, output_dir:str, pmid:str) -> None:
     """retrieves supplementary files from the article"""
-    main_dir = 'data'
-    supp_output_dir = 'supp_data'
     new_dir = pmid
-    new_path = os.path.join(main_dir, supp_output_dir, new_dir)
+    new_path = os.path.join(output_dir, new_dir)
     # creates the directory if it doesn't exist
     os.makedirs(new_path, exist_ok=True)
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
@@ -125,6 +123,7 @@ def get_tables(url, pmid) -> None:
     if not os.listdir(new_path):
         print("No files were downloaded.")
     return
+
 
 def get_pdfs(url):
     """retrieves associated pdf of the full article"""
@@ -187,6 +186,50 @@ def get_pdfs(url):
 # this is what we're currently creating: https://pmc.ncbi.nlm.nih.gov/pmc/articles/pmid/pdf/41586_2023_Article_6473.pdf
 # don't know where the 10499611 is coming from at the moment (see content_url)
 
+def get_upw(doi_list:list[str], output_dir:str, email:str):
+    """
+    get_upw
+    gets the PDFs for articles via unpaywall.org
+    This site is searchable using the doi for a publication
+
+    Parameters:
+        doi_list: list of strings, one doi reference per entry
+        output_dir: output directory for all pdfs
+        email: valid email address 
+
+    Returns:
+        None
+    """
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    for doi in doi_list:
+        try:
+            url = f"https://api.unpaywall.org/v2/{doi}?email={email}"
+            r = requests.get(url)
+            if r.status_code != 200:
+                print(f"Failed: {doi} (status {r.status_code})")
+                continue
+
+            data = r.json()
+            pdf_url = data.get("best_oa_location", {}).get("url_for_pdf")
+
+            if pdf_url:
+                print(f"Downloading: {doi} -> {pdf_url}")
+                pdf_response = requests.get(pdf_url, headers={"User-Agent": "Mozilla/5.0"})
+                if pdf_response.status_code == 200:
+                    filename = doi.replace("/", "_") + ".pdf"
+                    with open(os.path.join(output_dir, filename), "wb") as f:
+                        f.write(pdf_response.content)
+                else:
+                    print(f"  PDF fetch failed ({pdf_response.status_code})")
+            else:
+                print(f"No PDF found for: {doi}")
+
+        except Exception as e:
+            print(f"Error processing {doi}: {e}")
+
+
 def get_metadata(plist: list[int], dlist: list[str]):
     fetch = PubMedFetcher()
     articles = {}
@@ -248,58 +291,66 @@ def main():
         parser.add_argument('-t','--search-term', default=DEFAULT_SEARCH_TERM, help='default search term')
         parser.add_argument('-c','--count', default=DEFAULT_RETURN_COUNT, help="default number of search results to return")
         # TODO: #13 link output data directory command line
-        parser.add_argument('-o','--output_dir', default='output', help='Destination top-level directory for output files')
+        parser.add_argument('-o','--output_dir', default='data', help='Destination top-level directory for output files')
         parser.add_argument('-s','--search', action='store_true', help='Do the search')
         parser.add_argument('-p','--pdf', action='store_true', help="Download the articles as PDFs if available")
         # TODO: #10 link download data option command line
         parser.add_argument('-d','--data', action='store_true', help="Download the supplementary data if available")
+        parser.add_argument('-e','--email', help='email address to supply to NCBI and Unpaywall')
 
         # argparse populates an object using parse_args
         # extract its members into a dict and from there into variables if used in more than one place
         config = vars(parser.parse_args())
 
+        main_dir = config['output_dir']
+        os.makedirs(main_dir, exist_ok=True)
+
+        # choose the 'search' option (-s) to force the search to be done
+        if config['search']:
+            print("Search option chosen")
+            # get_search_result has the predefined search term, and prompts on the console for the user email address
+            search_data = get_search_result()
+            # get_pmids just extracts the pmids from the structure returned
+            pmid_data = get_pmids(search_data)
+            # get_dois uses Entrez to extract the associated doi resource names and is working
+            valid_pmids, doi_data = get_dois(pmid_data)
+            # get_metadata is working fine. It retrieves a lot of metadata separately into DataFrames, 
+            # then merges this into a master DataFrame and saves it as a csv file
+            get_metadata(valid_pmids, doi_data)
+        
+        # this is a change of process: always read back the valid_pmids and doi_data from the file so we can skip the search 
+        # and metadata retrieval if it's already been done
+        # Load CSV
+        df = pd.read_csv("data/asd_article_metadata.csv")
+
+        # Extract DOIs and PMIDs
+        doi_data = df['doi'].tolist()
+        valid_pmids = [str(i) for i in df['pmid'].tolist()]
+
+        url_data = get_urls(valid_pmids)
+        if config['pdf']:
+            print("PDF download option chosen")
+            email  = config['email']
+            art_output_dir = 'article_data'
+            pdf_output_path = os.path.join(main_dir, art_output_dir)
+            # get the PDFs
+            get_upw(doi_data, pdf_output_path, email=email)
+
+        if config['data']:
+            print('Download supplementary data option')
+            supp_output_dir = 'supp_data'
+            table_output_path = os.path.join(main_dir, supp_output_dir)
+            for u, p in zip(url_data, valid_pmids):
+                try:
+                    get_tables(u, table_output_path, p)
+                except urllib.error.HTTPError:
+                    pass
+            print("All articles and data retrieved")
+        return 
     except AkgException as e:
         print(e)
         sys.exit(0)
 
-    # choose the 'search' option (-s) to force the search to be done
-    if config['search']:
-        print("Search option chosen")
-        # get_search_result has the predefined search term, and prompts on the console for the user email address
-        search_data = get_search_result()
-        # get_pmids just extracts the pmids from the structure returned
-        pmid_data = get_pmids(search_data)
-        # get_dois uses Entrez to extract the associated doi resource names and is working
-        valid_pmids, doi_data = get_dois(pmid_data)
-        # get_metadata is working fine. It retrieves a lot of metadata separately into DataFrames, 
-        # then merges this into a master DataFrame and saves it as a csv file
-        get_metadata(valid_pmids, doi_data)
-    
-    # this is a change of process: always read back the valid_pmids and doi_data from the file so we can skip the search 
-    # and metadata retrieval if it's already been done
-    # Load CSV
-    df = pd.read_csv("data/asd_article_metadata.csv")
-
-    # Extract DOIs and PMIDs
-    doi_data = df['doi'].tolist()
-    valid_pmids = [str(i) for i in df['pmid'].tolist()]
-
-    url_data = get_urls(valid_pmids)
-    if config['pdf']:
-        print("PDF download option chosen")
-        for u in url_data:
-            try:
-                get_pdfs(u)
-            except urllib.error.HTTPError:
-                pass
-
-    for u, p in zip(url_data, valid_pmids):
-        try:
-            get_tables(u, p)
-        except urllib.error.HTTPError:
-            pass
-    print("All articles and data retrieved")
-    return 
 
 #future additions - add a function to be used to pull only new data
 
