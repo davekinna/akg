@@ -250,7 +250,6 @@ def main():
         # TODO: #13 link output data directory command line
         parser.add_argument('-o','--output_dir', default='output', help='Destination top-level directory for output files')
         parser.add_argument('-s','--search', action='store_true', help='Do the search')
-        # TODO: #11 link pdf option command line
         parser.add_argument('-p','--pdf', action='store_true', help="Download the articles as PDFs if available")
         # TODO: #10 link download data option command line
         parser.add_argument('-d','--data', action='store_true', help="Download the supplementary data if available")
@@ -286,11 +285,14 @@ def main():
     valid_pmids = [str(i) for i in df['pmid'].tolist()]
 
     url_data = get_urls(valid_pmids)
-    for u in url_data:
-        try:
-            get_pdfs(u)
-        except urllib.error.HTTPError:
-            pass
+    if config['pdf']:
+        print("PDF download option chosen")
+        for u in url_data:
+            try:
+                get_pdfs(u)
+            except urllib.error.HTTPError:
+                pass
+
     for u, p in zip(url_data, valid_pmids):
         try:
             get_tables(u, p)
