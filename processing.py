@@ -249,7 +249,6 @@ def main():
         parser.add_argument('-c','--count', default=DEFAULT_RETURN_COUNT, help="default number of search results to return")
         # TODO: #13 link output data directory command line
         parser.add_argument('-o','--output_dir', default='output', help='Destination top-level directory for output files')
-        # TODO: #12 link search option command line
         parser.add_argument('-s','--search', action='store_true', help='Do the search')
         # TODO: #11 link pdf option command line
         parser.add_argument('-p','--pdf', action='store_true', help="Download the articles as PDFs if available")
@@ -260,20 +259,32 @@ def main():
         # extract its members into a dict and from there into variables if used in more than one place
         config = vars(parser.parse_args())
 
-        data_dir = config['data_dir']
     except AkgException as e:
         print(e)
         sys.exit(0)
 
-    # get_search_result has the predefined search term, and prompts on the console for the user email address
-    search_data = get_search_result()
-    # get_pmids just extracts the pmids from the structure returned
-    pmid_data = get_pmids(search_data)
-    # get_dois uses Entrez to extract the associated doi resource names and is working
-    valid_pmids, doi_data = get_dois(pmid_data)
-    # get_metadata is working fine. It retrieves a lot of metadata separately into DataFrames, 
-    # then merges this into a master DataFrame and saves it as a csv file
-    get_metadata(valid_pmids, doi_data)
+    # choose the 'search' option (-s) to force the search to be done
+    if config['search']:
+        print("Search option chosen")
+        # get_search_result has the predefined search term, and prompts on the console for the user email address
+        search_data = get_search_result()
+        # get_pmids just extracts the pmids from the structure returned
+        pmid_data = get_pmids(search_data)
+        # get_dois uses Entrez to extract the associated doi resource names and is working
+        valid_pmids, doi_data = get_dois(pmid_data)
+        # get_metadata is working fine. It retrieves a lot of metadata separately into DataFrames, 
+        # then merges this into a master DataFrame and saves it as a csv file
+        get_metadata(valid_pmids, doi_data)
+    
+    # this is a change of process: always read back the valid_pmids and doi_data from the file so we can skip the search 
+    # and metadata retrieval if it's already been done
+    # Load CSV
+    df = pd.read_csv("data/asd_article_metadata.csv")
+
+    # Extract DOIs and PMIDs
+    doi_data = df['doi'].tolist()
+    valid_pmids = [str(i) for i in df['pmid'].tolist()]
+
     url_data = get_urls(valid_pmids)
     for u in url_data:
         try:
@@ -285,7 +296,7 @@ def main():
             get_tables(u, p)
         except urllib.error.HTTPError:
             pass
-    print("All articles and data retrived")
+    print("All articles and data retrieved")
     return 
 
 #future additions - add a function to be used to pull only new data
