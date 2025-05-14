@@ -6,6 +6,9 @@ from Bio import Entrez
 Entrez.api_key = "dde04e5b368b5a43e07ab39bec7b31100e08"
 from metapub.convert import pmid2doi
 import os
+import argparse
+import sys
+
 from bs4 import BeautifulSoup,  SoupStrainer
 import requests
 from urllib.request import urlopen, urlretrieve
@@ -17,6 +20,17 @@ from metapub import PubMedFetcher
 from selenium import webdriver
 from urllib.parse import urljoin
 
+class AkgException(Exception):
+    """
+    Custom exception for naming runtime error conditions that are detected and handled by this code
+    Simple text-only message, using the base class.
+    TODO: #9 move into a separate package
+
+    Usage:
+        raise AkgException("Something wrong happened")
+    """
+    # no actual implementation needed: the type of this class is all that is needed to recognise and use it
+    pass
 
 def get_search_result():
     """Article search, returning PMIDs for articles matching terms relating to Autism and gene expression"""
@@ -221,6 +235,36 @@ def get_metadata(plist: list[int], dlist: list[str]):
 
 
 def main():
+    """
+    Top-level function for AKG 'process'
+    """
+    # TODO: #8 connect search term and return count command line arguments to actions
+    DEFAULT_SEARCH_TERM  = '((autism[title] or ASD[title]) AND brain AND transcriptomic AND expression AND rna NOT review[title] NOT Review[Publication Type])'
+    DEFAULT_RETURN_COUNT = 30
+
+    try:
+        # manage the command line options
+        parser = argparse.ArgumentParser(description='Download and initially process supplementary data')
+        parser.add_argument('-t','--search-term', default=DEFAULT_SEARCH_TERM, help='default search term')
+        parser.add_argument('-c','--count', default=DEFAULT_RETURN_COUNT, help="default number of search results to return")
+        # TODO: #13 link output data directory command line
+        parser.add_argument('-o','--output_dir', default='output', help='Destination top-level directory for output files')
+        # TODO: #12 link search option command line
+        parser.add_argument('-s','--search', action='store_true', help='Do the search')
+        # TODO: #11 link pdf option command line
+        parser.add_argument('-p','--pdf', action='store_true', help="Download the articles as PDFs if available")
+        # TODO: #10 link download data option command line
+        parser.add_argument('-d','--data', action='store_true', help="Download the supplementary data if available")
+
+        # argparse populates an object using parse_args
+        # extract its members into a dict and from there into variables if used in more than one place
+        config = vars(parser.parse_args())
+
+        data_dir = config['data_dir']
+    except AkgException as e:
+        print(e)
+        sys.exit(0)
+
     # get_search_result has the predefined search term, and prompts on the console for the user email address
     search_data = get_search_result()
     # get_pmids just extracts the pmids from the structure returned
