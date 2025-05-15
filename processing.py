@@ -100,28 +100,66 @@ def get_tables(url:str, output_dir:str, pmid:str) -> None:
         print(f"HTTP Error {e.code}: {e.reason}")
         return
 
+    # keep track of links already found
+    links = list()
+
+    # to circumvent the bot protection, fire up a real browser
+    # output_sh = os.path.join(output_dir, 'output.sh')
+    # put this script to invoke in the cwd. TODO: make the full path explicit, security
+    output_sh = os.path.join('.', 'output.sh')
+    firefox_path = '"C:\\Program Files\\Mozilla Firefox\\firefox.exe"'
+
+    # will need to write the download target location into the profile
+    profiles = get_firefox_profiles() 
+    # Find the default profile path
+    default_path = next(info['path'] for info in profiles.values() if info['default'])
+
+    # Write or overwrite user.js there
+    #    user_js_path = os.path.join(default_path, "user.js")
+
     soup = BeautifulSoup(html, "html.parser")
     for link in soup.find_all('a', href=True):
         href = link['href']
         if any(href.lower().endswith(x) for x in ['.csv', '.xls', '.xlsx', '.tsv', '.txt']):
             full_url = urljoin(content_url, href)
-            filename = os.path.join(new_path, href.rsplit('/', 1)[-1])
-            if os.path.isfile(filename):
-                print(f"File '{filename}' already exists. Skipping file creation.")
-            else:
-                print(f"Downloading {full_url} to {filename}...")
-# switch to using requests instead of urllib, which was failing
-                try:
-                    response = requests.get(full_url, headers=headers)
-                    response.raise_for_status()
-                    with open(filename, 'wb') as fw:
-                        fw.write(response.content)
-                except requests.exceptions.RequestException as e:
-                    print(f"Error fetching the page: {e}")
-                    return None
+            # typically the content has two copies of the same link, handle this here
+            if full_url not in links:
+                links.append(full_url)
+                local_filename = href.rsplit('/', 1)[-1]
+                filename = os.path.join(new_path, local_filename)
+                profile_filename = os.path.join('C:\\firefox_downloads', local_filename)
 
-    if not os.listdir(new_path):
-        print("No files were downloaded.")
+    # working with profiles not working yet, come back to this. In the meantime copy the file after downloading.
+                # with open(user_js_path, "w", encoding="utf-8") as f:
+                #     f.write('\n'.join([
+                #         'user_pref("browser.download.folderList", 2);',
+                #         r'user_pref("browser.download.dir", new_path);'
+                #     ]))
+                # print(f"Wrote user.js to {user_js_path}")
+
+    # original version skipped the download if it was there already
+                print(f"Downloading {full_url} to {filename}...")
+                with open(output_sh,'a') as osh:
+                    osh.write(firefox_path+ " "+ full_url)
+                    osh.write('\n')
+                    osh.write('sleep 5s\n')
+                    osh.write('\n')
+                    osh.write('cp "'+ profile_filename + '" "' + filename + '"')
+                    osh.write('\n')
+
+                # possibly reinstate this code as an option/backup 
+                # switch to using requests instead of urllib, which was failing
+                # try:
+                #     response = requests.get(full_url, headers=headers)
+                #     response.raise_for_status()
+                #     with open(filename, 'wb') as fw:
+                #         fw.write(response.content)
+                # except requests.exceptions.RequestException as e:
+                #     print(f"Error fetching the page: {e}")
+                #     return None
+
+    # if not os.listdir(new_path):
+    #     print("No files were downloaded.")
     return
 
 
@@ -338,6 +376,7 @@ def main():
 
         if config['data']:
             print('Download supplementary data option')
+            print('Working directory: '+os.getcwd())
             supp_output_dir = 'supp_data'
             table_output_path = os.path.join(main_dir, supp_output_dir)
             for u, p in zip(url_data, valid_pmids):
@@ -351,6 +390,52 @@ def main():
         print(e)
         sys.exit(0)
 
+import os
+import sys
+import configparser
+
+# chatgpt code to find firefox path
+def get_firefox_profiles():
+    # Determine the path to profiles.ini based on OS
+    if sys.platform.startswith('win'):
+        ini_path = os.path.join(os.environ['APPDATA'], 'Mozilla', 'Firefox', 'profiles.ini')
+    elif sys.platform == 'darwin':
+        ini_path = os.path.expanduser('~/Library/Application Support/Firefox/profiles.ini')
+    else:  # Linux and other Unices
+        ini_path = os.path.expanduser('~/.mozilla/firefox/profiles.ini')
+
+    if not os.path.exists(ini_path):
+        raise FileNotFoundError(f"Couldn't find profiles.ini at {ini_path!r}")
+
+    # Parse the INI
+    config = configparser.ConfigParser()
+    config.read(ini_path)
+
+    base_dir = os.path.dirname(ini_path)
+    profiles = {}
+    for section in config.sections():
+        if not section.startswith('Profile'):
+            continue
+
+        name       = config[section].get('Name')
+        path       = config[section]['Path']
+        is_rel     = config[section].getboolean('IsRelative', fallback=True)
+        default    = config[section].getboolean('Default', fallback=False)
+
+        # Resolve full path
+        full_path = os.path.join(base_dir, path) if is_rel else path
+        profiles[name] = {
+            'path': os.path.abspath(full_path),
+            'default': default
+        }
+
+    return profiles
+
+if __name__ == "__main__":
+    profiles = get_firefox_profiles()
+    for name, info in profiles.items():
+        mark = "(default)" if info['default'] else ""
+        print(f"{name:20s} {info['path']} {mark}")
 
 #future additions - add a function to be used to pull only new data
 
