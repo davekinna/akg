@@ -175,7 +175,8 @@ def process_regular_csv(csv_file_path, matched_genes, unmatched_genes):
     return matched_genes, unmatched_genes
 
 # Root directory to search for CSV files, and tracker for number of genes HGNC IDs found
-root_dir = "C:\\Users\\tamjh\\CodeProjects\\ASDProject\\data"
+# root_dir = "C:\\Users\\tamjh\\CodeProjects\\ASDProject\\data"
+root_dir = "E:\\study\\bioinformatics\\bbkcourse\\Project\\work\\akg\\data"
 matched_genes = 0
 unmatched_genes = 0 
 total_files_processed = 0

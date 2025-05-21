@@ -10,29 +10,35 @@ import re
 def process_excel_file(file_path):
     """loads excel files into dataframes
     """
-    wb = load_workbook(filename=file_path, read_only=True)
-    output_dir = os.path.dirname(file_path)
-    
-    for sheet_name in wb.sheetnames:
-        df = pd.read_excel(file_path, sheet_name=sheet_name)
-        process_dataframe(df, sheet_name, output_dir, file_path)
+    try:
+        wb = load_workbook(filename=file_path, read_only=True)
+        output_dir = os.path.dirname(file_path)
+        
+        for sheet_name in wb.sheetnames:
+            df = pd.read_excel(file_path, sheet_name=sheet_name)
+            process_dataframe(df, sheet_name, output_dir, file_path)
+    except Exception as e:
+        print(f"Failed to process excel file: {file_path}: {str(e)}")
         
 
 def process_old_file(file_path):
     """loads older-style excel files (.xls) into dataframes
     """
-    wb = xlrd.open_workbook(file_path)
-    output_dir = os.path.dirname(file_path)
-    for sheet in wb.sheets():
-        print(f"Processing sheet: {sheet.name}")
-        headers = [sheet.cell_value(0, col) for col in range(sheet.ncols)]
-        data = [
-            [sheet.cell_value(row, col) for col in range(sheet.ncols)]
-            for row in range(1, sheet.nrows)
-        ]
-        df = pd.DataFrame(data, columns=headers)
-        
-        process_dataframe(df, sheet.name, output_dir, file_path)
+    try:
+        wb = xlrd.open_workbook(file_path)
+        output_dir = os.path.dirname(file_path)
+        for sheet in wb.sheets():
+            print(f"Processing sheet: {sheet.name}")
+            headers = [sheet.cell_value(0, col) for col in range(sheet.ncols)]
+            data = [
+                [sheet.cell_value(row, col) for col in range(sheet.ncols)]
+                for row in range(1, sheet.nrows)
+            ]
+            df = pd.DataFrame(data, columns=headers)
+            
+            process_dataframe(df, sheet.name, output_dir, file_path)
+    except Exception as e:
+        print(f"Failed to process 'old' file: {file_path}: {str(e)}")
 
 
 def process_csv_file(file_path):
@@ -109,6 +115,9 @@ def process_data_folder(data_folder):
     """
     for root, dirs, files in os.walk(data_folder):
         for file in files:
+            # skip files that we wrote out on a previous iteration
+            if file.lower().startswith('expdata_'):
+                continue
             file_path = os.path.join(root, file)
             print(f"Processing file: {file_path}")
             if file.lower().endswith('.xlsx'):
@@ -118,6 +127,35 @@ def process_data_folder(data_folder):
             elif file.lower().endswith(('.csv', '.tsv', '.txt')):
                 process_csv_file(file_path)
 
+def save_filenames(data_folder:str, save_out_file:str='supp_files.txt'):
+    """
+    function save_filename
 
-data_folder = "data\\supp_data\\"
-process_data_folder(data_folder)
+    Save the supplementary data file names to the given file, so that the work up to this point does not need to be repeated
+    if it isn't necessary
+
+    Parameters:
+        data_folder:str
+        save_out_file:str
+
+    Returns:
+        None
+
+    Raises:
+        No direct exception handling/raising in this code
+
+    """
+    save_out_path = os.path.join(data_folder, save_out_file)
+    with open(save_out_path, 'w', encoding="utf-8") as sof:
+        for dirpath, dirnames, filenames in os.walk(data_folder):
+            for filename in filenames:
+                if filename.endswith('.csv'):
+                    csv_file_path = os.path.join(dirpath, filename)
+                    sof.write(csv_file_path)
+                    sof.write('\n')
+
+
+if __name__ == '__main__':
+    data_folder = "data\\supp_data\\"
+    process_data_folder(data_folder)
+    save_filenames(data_folder)
