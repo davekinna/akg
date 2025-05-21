@@ -6,7 +6,9 @@ The Birkbeck ASD Knowledge Graph
 ## Aims
 * Build on the work of https://github.com/tamjhill/ASDProject
 
-## Workflow for using the code (original author's notes)
+## Workflow for using the code
+These are the original author's notes and are still relevant.
+
 Outline of the project and code:
 
 1. finding relevant articles
