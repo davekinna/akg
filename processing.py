@@ -301,6 +301,10 @@ def get_metadata(plist: list[int], dlist: list[str]):
     data_frames = [Title, Date, Journal, Doi, Abstract]
     df_merged = reduce(lambda  left, right: pd.merge(left, right, on=['pmid'], how='outer'), data_frames)
 
+    # add placeholders for the exclusion columns
+    df_merged['exclude'] = False
+    df_merged['exclude reason'] = ''
+
     # Export the merged DataFrame to a CSV file
     main_dir = 'data'
     if not os.path.isdir(main_dir):
@@ -360,6 +364,9 @@ def main():
         # and metadata retrieval if it's already been done
         # Load CSV
         df = pd.read_csv("data/asd_article_metadata.csv")
+
+        # only work on the entries that haven't been excluded
+        df = df[~df['exclude']]
 
         # Extract DOIs and PMIDs
         doi_data = df['doi'].tolist()

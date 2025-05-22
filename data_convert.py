@@ -110,24 +110,49 @@ def process_dataframe(df, sheet_name, output_dir, file_path, input_delimiter='\t
         print(f"Skipped {sheet_name} in {file_path}: No 'log fold change' column found")
 
 
-def process_data_folder(data_folder):
-    """ Walks through all subdirectories, processes files found according to their extension
-    """
-    for root, dirs, files in os.walk(data_folder):
-        for file in files:
-            # skip files that we wrote out on a previous iteration
-            if file.lower().startswith('expdata_'):
-                continue
-            file_path = os.path.join(root, file)
-            print(f"Processing file: {file_path}")
-            if file.lower().endswith('.xlsx'):
-                process_excel_file(file_path)
-            elif file.lower().endswith('.xls'):
-                process_old_file(file_path)
-            elif file.lower().endswith(('.csv', '.tsv', '.txt')):
-                process_csv_file(file_path)
+def process_supp_data_folder(data_folder:str, article_file_path:str ):
+    """ 
+    function process_supp_data_folder
 
-def save_filenames(data_folder:str, save_out_file:str='supp_files.txt'):
+    Walks through all immediate PMID-named subdirectories of data_folder, processes files found according to their extension
+    Excludes subdirectories which are marked as 'exclude' in the CSV file defined in article_file_path
+    *May* change contents of article_file_path at this level in future, doesn't do this at present
+
+    Parameters:
+        data_folder:str
+        article_file_path:str # must be a full path
+
+    Returns:
+        None
+
+    Raises:
+        No direct exception handling/raising in this code    
+
+    """
+    df = pd.read_csv(article_file_path)
+
+    # only work on the entries that haven't been excluded
+    df = df[~df['exclude']]
+
+    pmids = df['pmid'].tolist()
+
+    for pmid in pmids:
+        pmid_folder = os.path.join(data_folder, str(pmid))
+        for root, dirs, files in os.walk(pmid_folder):
+            for file in files:
+                # skip files that we wrote out on a previous iteration
+                if file.lower().startswith('expdata_'):
+                    continue
+                file_path = os.path.join(root, file)
+                print(f"Processing file: {file_path}")
+                if file.lower().endswith('.xlsx'):
+                    process_excel_file(file_path)
+                elif file.lower().endswith('.xls'):
+                    process_old_file(file_path)
+                elif file.lower().endswith(('.csv', '.tsv', '.txt')):
+                    process_csv_file(file_path)
+
+def save_filenames(data_folder:str, article_file_path:str, save_out_file:str='supp_files.txt'):
     """
     function save_filename
 
@@ -136,6 +161,7 @@ def save_filenames(data_folder:str, save_out_file:str='supp_files.txt'):
 
     Parameters:
         data_folder:str
+        article_file_path:str # must be a full path
         save_out_file:str
 
     Returns:
@@ -146,16 +172,34 @@ def save_filenames(data_folder:str, save_out_file:str='supp_files.txt'):
 
     """
     save_out_path = os.path.join(data_folder, save_out_file)
+
+    df = pd.read_csv(article_file_path)
+
+    # only work on the entries that haven't been excluded
+    df = df[~df['exclude']]
+
+    pmids = df['pmid'].tolist()
+
     with open(save_out_path, 'w', encoding="utf-8") as sof:
-        for dirpath, dirnames, filenames in os.walk(data_folder):
-            for filename in filenames:
-                if filename.endswith('.csv'):
-                    csv_file_path = os.path.join(dirpath, filename)
-                    sof.write(csv_file_path)
-                    sof.write('\n')
+
+        for pmid in pmids:
+            pmid_folder = os.path.join(data_folder, str(pmid))
+            for dirpath, dirs, filenames in os.walk(pmid_folder):
+                for filename in filenames:
+                    if filename.endswith('.csv'):
+                        csv_file_path = os.path.join(dirpath, filename)
+                        sof.write(csv_file_path)
+                        sof.write('\n')
 
 
 if __name__ == '__main__':
-    data_folder = "data\\supp_data\\"
-    process_data_folder(data_folder)
-    save_filenames(data_folder)
+    main_dir = 'data'
+    if not os.path.isdir(main_dir):
+        os.mkdir(main_dir)
+    article_file_path = os.path.join(main_dir, 'asd_article_metadata.csv')
+    if not os.path.isfile(article_file_path):
+        print(f"Error: running data_convert.py but {article_file_path} does not exist: run processing.py first ")
+
+    supp_data_folder = os.path.join(main_dir,"supp_data")
+    process_supp_data_folder(supp_data_folder, article_file_path)
+    save_filenames(supp_data_folder, article_file_path)
