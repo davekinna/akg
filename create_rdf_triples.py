@@ -7,6 +7,7 @@ from rdflib.namespace import XSD
 import requests
 import uuid
 import json
+import pandas as pd
 
 try:
     with open('filename_uuid_map.json', 'r') as f:
@@ -174,35 +175,55 @@ def process_regular_csv(csv_file_path, matched_genes, unmatched_genes):
 #                        graph.add((row_uri, predicate, Literal(value)))
     return matched_genes, unmatched_genes
 
-# Root directory to search for CSV files, and tracker for number of genes HGNC IDs found
-# root_dir = "C:\\Users\\tamjh\\CodeProjects\\ASDProject\\data"
-root_dir = "E:\\study\\bioinformatics\\bbkcourse\\Project\\work\\akg\\data"
-matched_genes = 0
-unmatched_genes = 0 
-total_files_processed = 0
+if __name__ == '__main__':
+    # Root directory to search for CSV files, and tracker for number of genes HGNC IDs found
+    # root_dir = "C:\\Users\\tamjh\\CodeProjects\\ASDProject\\data"
+#    root_dir = "E:\\study\\bioinformatics\\bbkcourse\\Project\\work\\akg\\data"
+    matched_genes = 0
+    unmatched_genes = 0 
+    total_files_processed = 0
 
-for dirpath, dirnames, filenames in os.walk(root_dir):
-    for filename in filenames:
-        if filename.endswith('.csv'):
-            csv_file_path = os.path.join(dirpath, filename)
+    main_dir = 'data'
+    if not os.path.isdir(main_dir):
+        os.mkdir(main_dir)
+    article_file_path = os.path.join(main_dir, 'asd_article_metadata.csv')
+    if not os.path.isfile(article_file_path):
+        print(f"Error: running data_convert.py but {article_file_path} does not exist: run processing.py first ")
 
-            if filename == 'asd_article_metadata.csv':
-                print(f"Processing file: {csv_file_path}")
-                process_metadata_csv(csv_file_path)
-            elif filename.startswith('expdata'):
-                print(f"Processing file: {csv_file_path}")
-                matched_genes, unmatched_genes = process_regular_csv(csv_file_path, matched_genes, unmatched_genes)
-            total_files_processed += 1
+    supp_data_folder = os.path.join(main_dir,"supp_data")
 
-print("\nProcessing complete. Summary:")
-print(f"Total CSV files processed: {total_files_processed}")
-print(f"Total matched genes: {matched_genes}")
-print(f"Total unmatched genes: {unmatched_genes}")
-print(f"Total genes processed: {matched_genes + unmatched_genes}")
-graph.serialize(destination='main_graph.nt', format='nt', encoding= "utf-8" )
-print("Combined graph has been serialized to main_graph.nt")
+    df = pd.read_csv(article_file_path)
 
-#store all the uuid dataset allocated names
-with open('filename_uuid_map.json', 'w') as f:
-    json.dump(filename_uuid_map, f)
+    # only work on the entries that haven't been excluded
+    df = df[~df['exclude']]
+
+    pmids = df['pmid'].tolist()
+
+    for pmid in pmids:
+        pmid_folder = os.path.join(supp_data_folder, str(pmid))
+
+        for dirpath, dirnames, filenames in os.walk(pmid_folder):
+            for filename in filenames:
+                if filename.endswith('.csv'):
+                    csv_file_path = os.path.join(dirpath, filename)
+
+                    if filename == 'asd_article_metadata.csv':
+                        print(f"Processing file: {csv_file_path}")
+                        process_metadata_csv(csv_file_path)
+                    elif filename.startswith('expdata'):
+                        print(f"Processing file: {csv_file_path}")
+                        matched_genes, unmatched_genes = process_regular_csv(csv_file_path, matched_genes, unmatched_genes)
+                    total_files_processed += 1
+
+    print("\nProcessing complete. Summary:")
+    print(f"Total CSV files processed: {total_files_processed}")
+    print(f"Total matched genes: {matched_genes}")
+    print(f"Total unmatched genes: {unmatched_genes}")
+    print(f"Total genes processed: {matched_genes + unmatched_genes}")
+    graph.serialize(destination='main_graph.nt', format='nt', encoding= "utf-8" )
+    print("Combined graph has been serialized to main_graph.nt")
+
+    #store all the uuid dataset allocated names
+    with open('filename_uuid_map.json', 'w') as f:
+        json.dump(filename_uuid_map, f)
 
