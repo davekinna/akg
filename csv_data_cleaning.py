@@ -38,14 +38,31 @@ def process_csv_file(file_path):
         print(f"Error processing file {file_path}: {str(e)}")
 
 
-def process_data_folder(data_folder):
-    for root, dirs, files in os.walk(data_folder):
-        for file in files:
-            if file.startswith('expdata') and file.endswith('.csv'):
-                file_path = os.path.join(root, file)
-                print(f"Processing file: {file_path}")
-                process_csv_file(file_path)
+def process_data_folder(data_folder:str,  article_file_path:str):
+    df = pd.read_csv(article_file_path)
+
+    # only work on the entries that haven't been excluded
+    df = df[~df['exclude']]
+
+    pmids = df['pmid'].tolist()
+
+    for pmid in pmids:
+        pmid_folder = os.path.join(data_folder, str(pmid))
+        for root, dirs, files in os.walk(pmid_folder):
+            for file in files:
+                if file.startswith('expdata') and file.endswith('.csv'):
+                    file_path = os.path.join(root, file)
+                    print(f"Processing file: {file_path}")
+                    process_csv_file(file_path)
 
 if __name__ == '__main__':
-    data_folder = "data\\supp_data"
-    process_data_folder(data_folder)
+    main_dir = 'data'
+    if not os.path.isdir(main_dir):
+        os.mkdir(main_dir)
+    article_file_path = os.path.join(main_dir, 'asd_article_metadata.csv')
+    if not os.path.isfile(article_file_path):
+        print(f"Error: running csv_data_cleaning.py but {article_file_path} does not exist: run processing.py first ")
+
+    supp_data_folder = os.path.join(main_dir,"supp_data")
+    process_data_folder(supp_data_folder, article_file_path)
+    
