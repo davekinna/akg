@@ -81,7 +81,7 @@ def process_metadata_csv(csv_file_path):
                         graph.add((pmid_uri, DCT.publisher, Literal(value)))
 
 
-def get_gene_id(gene_name) -> None:
+def get_gene_id(gene_name) -> str:
     """retrieves relevant HGNC gene if from file gene_ids.txt.
     Currently removes extra transcript info for simplicity - can be added back in in future trials
     """
