@@ -29,17 +29,38 @@ class GeneIdStore:
     Store of gene IDs in multiple formats. For searching.
     """
     def __init__(self, source:str="gene_ids.txt"):
+        # create a dict for lookup of ensemble IDs, mapping back to HGNC IDs.
+        # this is an optimisation
+        self._ens:dict[str,str] = {}
         with open(source, 'r') as file:
             next(file)  
             lines = file.readlines()
             self._lines = [line.upper() for line in lines]
-            # self._lines = file.readlines()
-    def get_gene_id(self, gene_name:str):
+        # populate the ensemble ID dict
         for line in self._lines:
-            if gene_name.upper() in line: # .upper():
-                #print(f"{gene_name} HGNC ID found")
-                return line.split('\t')[0]
-    #print(f"HGNC ID not found for {gene_name}")
+            sline = line.split('\t')
+            if len(sline) > 2: # (the second entry on the line is the ensemble ID for it to be useful)
+                hgnc_ID = sline[0].strip() # first entry needs to be hgnc to be useful. See issue 17.
+                if hgnc_ID.startswith('HGNC'):
+                    ensemble_ID = sline[1].strip()
+                    if ensemble_ID.startswith('ENS'): # really is an ensemble ID
+                        # for consistent behaviour with the original, don't overwrite 
+                        # values with ones that are later on in the gene_ids.txt data
+                        if ensemble_ID not in self._ens:
+                            self._ens[ensemble_ID] = hgnc_ID
+        print(f'ensemble_id to hgnc dict has {len(self._ens)} entries')
+
+    def get_gene_id(self, gene_name:str):
+        direct_lookup = self._ens.get(gene_name, None)
+        if direct_lookup is not None:
+            return direct_lookup
+        else:
+            for line in self._lines:
+                if gene_name.upper() in line: # .upper():
+                    #print(f"{gene_name} HGNC ID found")
+                    return line.split('\t')[0]
+        # for optimisation, really useful to know what is not found
+        # print(f"HGNC ID not found for {gene_name}")
         return ''
         
 # run the tests on the command line with 

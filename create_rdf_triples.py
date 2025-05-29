@@ -4,7 +4,6 @@ import rdflib
 from rdflib import Namespace, URIRef, Literal
 import os
 from rdflib.namespace import XSD
-import requests
 import uuid
 import json
 import pandas as pd
