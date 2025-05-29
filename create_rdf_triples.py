@@ -8,6 +8,7 @@ import requests
 import uuid
 import json
 import pandas as pd
+from akg import GeneIdStore
 
 try:
     with open('filename_uuid_map.json', 'r') as f:
@@ -80,33 +81,10 @@ def process_metadata_csv(csv_file_path):
                     if column == 'journal' and value:
                         graph.add((pmid_uri, DCT.publisher, Literal(value)))
 
-
-def get_gene_id(gene_name) -> str:
-    """retrieves relevant HGNC gene if from file gene_ids.txt.
-    Currently removes extra transcript info for simplicity - can be added back in in future trials
-    """
-    # Remove 'hp_' and variant info to help matching process
-    if gene_name.startswith('hp_'):
-        gene_name = gene_name[3:]
-    if '_' in gene_name[-5:]:
-        gene_name = gene_name[:gene_name.rfind('_', len(gene_name) - 5)]    
-    if '.' in gene_name:
-        gene_name = gene_name.split('.')[0]
-    genefile = 'gene_ids.txt'
-    #print(f"Searching for gene: {gene_name}")
-    with open(genefile, 'r') as file:
-        next(file)  
-        for line in file:
-            if gene_name.upper() in line.upper():
-                #print(f"{gene_name} HGNC ID found")
-                return line.split('\t')[0]
-    #print(f"HGNC ID not found for {gene_name}")
-    return None
-    
     
 def process_regular_csv(csv_file_path, matched_genes, unmatched_genes):
-    """processes the gene expression csv files (not the metatdata file).
-    Searches for relevant information, converts wto triples while adding relevant prefixes.
+    """processes the gene expression csv files (not the metadata file).
+    Searches for relevant information, converts to triples while adding relevant prefixes.
     """
     filename = os.path.splitext(os.path.basename(csv_file_path))[0]
     pmid = os.path.basename(os.path.dirname(csv_file_path))
@@ -123,6 +101,9 @@ def process_regular_csv(csv_file_path, matched_genes, unmatched_genes):
     possible_log_names = ['log2', 'lf2', 'lfc2', 'logfold2', 'log2fc', 'logfoldchange', 'logfold', 'lf', 'logfc', 'foldchange', 'fc', 'lfc', 'fold', 'expression', 'enrichment', 'estimate']
     possible_pval_names = ['padj', 'adjp', 'pvalueadj', 'adjpvalue', 'pvaladj', 'adjpval', 'pvadj', 'adjpv', 'fdr', 'fdrpval', 'qvalue', 'pvalue', 'qval', 'pval', 'pv', 'qv']
     
+    # cached gene_id.txt data for faster lookup
+    mygids = GeneIdStore()
+
     with open(csv_file_path, 'r') as csvfile:
         reader = csv.DictReader(csvfile)
         for row in reader:
@@ -136,7 +117,7 @@ def process_regular_csv(csv_file_path, matched_genes, unmatched_genes):
             for column, value in row.items():
                 column_lower = column.lower()
                 if any(gene_name in column_lower for gene_name in possible_gene_names) and value and not gene_added:
-                    monarch_uri = get_gene_id(value)
+                    monarch_uri = mygids.get_gene_id(value)
                     if monarch_uri:
                         full_monarch_uri = MONARCH[monarch_uri]
                         graph.add((row_uri, BIOLINK.Gene, full_monarch_uri))
