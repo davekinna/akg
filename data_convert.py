@@ -66,6 +66,26 @@ def process_csv_file(file_path):
     except Exception as e:
         print(f"Failed to read {file_path} as text: {str(e)}")
 
+def test_lfc_search():
+    """Debug test snippet from process_dataframe, to confirm that some odd LFC columns are being chosen
+    because of the compression of the column name (see the reg expression)
+    """
+    col = "Relevance of circQTLs to ASD"
+    log_fold_col = ''
+    if any(phrase in re.sub(r'[_\s-]', '', col.lower()) for phrase in ['logfoldchange', 'logfold', 'logfold2', 'lf', 
+                                                                        'expression', 'enrichment', 'logfc', 'foldchange', 'fc', 
+                                                                        'log2', 'lf2', 'lfc', 'log2fc', 'log', 'fold']):
+        log_fold_col = col
+
+    sqcol = re.sub(r'[_\s-]', '', col.lower())
+    print(sqcol)
+    for phrase in ['logfoldchange', 'logfold', 'logfold2', 'lf', 
+                   'expression', 'enrichment', 'logfc', 'foldchange', 'fc', 
+                   'log2', 'lf2', 'lfc', 'log2fc', 'log', 'fold']:
+        print(f'{phrase}:{sqcol.find(phrase)}\n')
+    assert log_fold_col
+    print(f'log_fold_col:{log_fold_col}')
+
 
 def process_dataframe(df, sheet_name, output_dir, file_path, input_delimiter='\t'):
     """processes dataframes to assess if the data relates to gene expression - looks for "log fold change" or similar
@@ -82,6 +102,7 @@ def process_dataframe(df, sheet_name, output_dir, file_path, input_delimiter='\t
     
     # If matching column is found, save sheet as CSV
     if log_fold_col:
+        print(f'log fold column is {log_fold_col}')
         # remove characters not appropriate for filenames
         replacement_chars  = {" " : "",
                               "<" : "lessthan",
