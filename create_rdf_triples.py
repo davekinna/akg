@@ -157,6 +157,17 @@ def process_regular_csv(csv_file_path, matched_genes, unmatched_genes):
 #                        graph.add((row_uri, predicate, Literal(value)))
     return matched_genes, unmatched_genes
 
+def test_unicode_bug_1():
+    """
+    has been crashing after processing the given file
+    """
+    csv_file_path = "data\\supp_data\\37041460\\expdata_DEGSscommontoallsubtypes.csv"
+    matched_genes=0
+    unmatched_genes=0
+    matched_genes, unmatched_genes = process_regular_csv(csv_file_path, matched_genes, unmatched_genes)
+    
+
+
 if __name__ == '__main__':
     # Root directory to search for CSV files, and tracker for number of genes HGNC IDs found
     # root_dir = "C:\\Users\\tamjh\\CodeProjects\\ASDProject\\data"
@@ -225,4 +236,5 @@ if __name__ == '__main__':
     #store all the uuid dataset allocated names
     with open('filename_uuid_map.json', 'w') as f:
         json.dump(filename_uuid_map, f)
+
 

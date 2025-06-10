@@ -2,6 +2,16 @@ import pytest
 import time
 import sys
 
+class AKGException(Exception):
+    """
+    Custom exception for naming runtime error conditions that are detected and handled by this code
+    Simple text-only message, using the base class.
+
+    Usage:
+        raise AKGException("Something wrong happened")
+    """
+    # no actual implementation needed: the type of this class is all that is needed to recognise and use it
+    pass
 
 def get_gene_id(gene_name) -> str:
     """retrieves relevant HGNC gene if from file gene_ids.txt.
@@ -31,38 +41,70 @@ class GeneIdStore:
     """
     def __init__(self, source:str="gene_ids.txt"):
         # create a dict for lookup of ensemble IDs, mapping back to HGNC IDs.
+        # create a separate one for other types
         # this is an optimisation
         self._ens:dict[str,str] = {}
+        self._oth:dict[str,str] = {}
         with open(source, 'r') as file:
             next(file)  
             lines = file.readlines()
             self._lines = [line.upper() for line in lines]
         # populate the ensemble ID dict
         for line in self._lines:
-            sline = line.split('\t')
+            sline = line.split() # split on all whitespace
             if len(sline) > 2: # (the second entry on the line is the ensemble ID for it to be useful)
                 hgnc_ID = sline[0].strip() # first entry needs to be hgnc to be useful. See issue 17.
                 if hgnc_ID.startswith('HGNC'):
-                    ensemble_ID = sline[1].strip().upper()
-                    if ensemble_ID.startswith('ENS'): # really is an ensemble ID
-                        # for consistent behaviour with the original, don't overwrite 
-                        # values with ones that are later on in the gene_ids.txt data
-                        if ensemble_ID not in self._ens:
-                            self._ens[ensemble_ID] = hgnc_ID
+                    # loop through all the whitespace-separated components and add them to the dict
+                    for id in sline[1:]:
+                        id = id.strip().upper()
+                        if id.startswith('ENS'): # really is an ensemble ID
+                            # for consistent behaviour with the original, don't overwrite 
+                            # values with ones that are later on in the gene_ids.txt data
+                            if id not in self._ens:
+                                self._ens[id] = hgnc_ID
+                        else:
+                            if id not in self._oth:
+                                self._oth[id] = hgnc_ID
         print(f'ensemble_id to hgnc dict has {len(self._ens)} entries')
+        print(f'other_id to hgnc dict has {len(self._oth)} entries')
         sys.stdout.flush()
 
     def get_gene_id(self, gene_name:str):
+        # Remove 'hp_' and variant info to help matching process
+        if gene_name.startswith('hp_'):
+            gene_name = gene_name[3:]
+        if '_' in gene_name[-5:]:
+            gene_name = gene_name[:gene_name.rfind('_', len(gene_name) - 5)]    
+        if '.' in gene_name:
+            gene_name = gene_name.split('.')[0]
+
         u_gene_name = gene_name.upper()
-        direct_lookup = self._ens.get(u_gene_name, None)
+        if u_gene_name.startswith('ENS'):
+            direct_lookup = self._ens.get(u_gene_name, None)
+            if direct_lookup is not None:
+                return direct_lookup
+
+            # try with strip the ensemble id version number
+            direct_lookup = self._ens.get(u_gene_name.split('.')[0], None)
+            if direct_lookup is not None:
+                print(f"HGNC ID found for ensemble ID {u_gene_name}, version omitted")
+                return direct_lookup
+
+        direct_lookup = self._oth.get(u_gene_name, None)
         if direct_lookup is not None:
+            print(f"HGNC ID found for other ID {u_gene_name}")
             return direct_lookup
-        else:
-            for line in self._lines:
-                if u_gene_name in line: # .upper():
-                    print(f"{gene_name} HGNC ID found")
-                    sys.stdout.flush()
-                    return line.split('\t')[0]
+
+        for line in self._lines:
+            if u_gene_name in line: # .upper():
+                print(f"{gene_name} HGNC ID found by brute-force search")
+                sys.stdout.flush()
+                return line.split('\t')[0]
+            if u_gene_name.split('.')[0] in line: # .upper():
+                print(f"{gene_name} HGNC ID found by brute-force search, first component only")
+                sys.stdout.flush()
+                return line.split('\t')[0]
         # for optimisation, really useful to know what is not found
         print(f"HGNC ID not found for {gene_name}")
         sys.stdout.flush()
@@ -344,3 +386,15 @@ def test_ens_2():
     mygids = compare_for_test('ENSG00000143333','HGNC:9997',gids=mygids)
     mygids = compare_for_test('ENSG00000116741','HGNC:9998',gids=mygids)
     mygids = compare_for_test('ENSG00000138835','HGNC:9999',gids=mygids)
+
+def test_grin2b():
+    gb  = 'GRIN2B'
+
+    mygids = GeneIdStore()
+
+    r1 = mygids.get_gene_id(gb)
+
+    print(f"found: {r1}")
+
+if __name__ == "__main__":
+    test_grin2b()
