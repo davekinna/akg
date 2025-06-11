@@ -2,6 +2,9 @@ import pandas as pd
 import os
 import re
 import warnings
+import argparse
+from akg import AKGException
+from tracking import create_tracking, load_tracking, save_tracking, create_empty_tracking_store, add_to_tracking, tracking_entry
 
 
 def rename_ensembl_column(df):
@@ -38,31 +41,49 @@ def process_csv_file(file_path):
         print(f"Error processing file {file_path}: {str(e)}")
 
 
-def process_data_folder(data_folder:str,  article_file_path:str):
-    df = pd.read_csv(article_file_path)
+def process_data_folder(data_folder:str,  tracking_file:str):
 
-    # only work on the entries that haven't been excluded
-    df = df[~df['exclude']]
+    df = load_tracking(tracking_file)
 
-    pmids = df['pmid'].tolist()
+    for index, row in df.iterrows():
+        excl = row['excl']
+        root = row['path']
+        file = row['file']
+        file_path = os.path.join(root, file)
+        if excl:
+            print(f"Excluding file: {file_path} manual: {row['manual']} : {row['manualreason']}")
+        else:
+            df.loc[index,'step'] = 2
+            if file.endswith('.csv'):
+                print(f"Processing file: {file_path}")
+                process_csv_file(file_path)
+                df.loc[index,'cleaned'] = True
 
-    for pmid in pmids:
-        pmid_folder = os.path.join(data_folder, str(pmid))
-        for root, dirs, files in os.walk(pmid_folder):
-            for file in files:
-                if file.startswith('expdata') and file.endswith('.csv'):
-                    file_path = os.path.join(root, file)
-                    print(f"Processing file: {file_path}")
-                    process_csv_file(file_path)
+    # write out the updated information (should have the new files we just wrote out)
+    save_tracking(df, tracking_file)
 
 if __name__ == '__main__':
-    main_dir = 'data'
+
+    # manage the command line options
+    parser = argparse.ArgumentParser(description='Convert downloaded supplementary data to graph precursor')
+    parser.add_argument('-i','--input_dir', default='data', help='Destination top-level directory for input data files (output files also written here)')
+    parser.add_argument('-t','--tracking_file', default='akg_tracking.xlsx', help='Tracking file name. This file is created in the top-level directory.')
+
+    # argparse populates an object using parse_args
+    # extract its members into a dict and from there into variables if used in more than one place
+    config = vars(parser.parse_args())
+
+    main_dir = config['input_dir']
+
     if not os.path.isdir(main_dir):
-        os.mkdir(main_dir)
-    article_file_path = os.path.join(main_dir, 'asd_article_metadata.csv')
-    if not os.path.isfile(article_file_path):
-        print(f"Error: running csv_data_cleaning.py but {article_file_path} does not exist: run processing.py first ")
+        raise AKGException(f"data_convert: data directory {main_dir} must exist")
+    
+    tracking_file = config['tracking_file']
+    tracking_file = os.path.join(main_dir, tracking_file)
+
+    if not os.path.exists(tracking_file):
+        raise AKGException(f"csv_data_cleaning: {tracking_file} must exist")
 
     supp_data_folder = os.path.join(main_dir,"supp_data")
-    process_data_folder(supp_data_folder, article_file_path)
+    process_data_folder(supp_data_folder, tracking_file)
     
