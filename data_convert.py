@@ -6,24 +6,36 @@ from openpyxl import load_workbook
 import xlrd
 import csv
 import re
+import argparse
+from akg import AKGException
+from tracking import create_tracking, load_tracking, save_tracking, tracking_col_names, create_empty_tracking_store, add_to_tracking, tracking_entry
 
-def process_excel_file(file_path):
+def process_excel_file(file_path)->pd.DataFrame:
     """loads excel files into dataframes
     """
+    # tracking DataFrame
+    tdf = create_empty_tracking_store()
+
     try:
         wb = load_workbook(filename=file_path, read_only=True)
         output_dir = os.path.dirname(file_path)
         
         for sheet_name in wb.sheetnames:
             df = pd.read_excel(file_path, sheet_name=sheet_name)
-            process_dataframe(df, sheet_name, output_dir, file_path)
+            new_file = process_dataframe(df, sheet_name, output_dir, file_path)
+            tdf = add_to_tracking(tdf, new_file)
+
     except Exception as e:
         print(f"Failed to process excel file: {file_path}: {str(e)}")
-        
 
-def process_old_file(file_path):
+    return tdf
+
+def process_old_file(file_path)->pd.DataFrame:
     """loads older-style excel files (.xls) into dataframes
     """
+    # tracking DataFrame
+    tdf = create_empty_tracking_store()
+
     try:
         wb = xlrd.open_workbook(file_path)
         output_dir = os.path.dirname(file_path)
@@ -36,14 +48,30 @@ def process_old_file(file_path):
             ]
             df = pd.DataFrame(data, columns=headers)
             
-            process_dataframe(df, sheet.name, output_dir, file_path)
+            new_file = process_dataframe(df, sheet.name, output_dir, file_path)
+            tdf = add_to_tracking(tdf, new_file)
+
     except Exception as e:
         print(f"Failed to process 'old' file: {file_path}: {str(e)}")
 
+    return tdf
 
-def process_csv_file(file_path):
-    """loads csv, tsc or txt friles into dataframes
+def process_csv_file(file_path:str)->pd.DataFrame:
+    """loads csv, tsc or txt files and prepares them to be inputs to the AKG
+
+        Parameters:
+            file_path:str   The file to process
+        Returns:
+            Information about the added output files (if any) in a form suitable for adding to the tracking data (a DataFrame)
     """
+    # The processing creates files that need to be added to the tracking, which can't be done inside the loop.
+# this is the pattern for adding some:
+#    added_files = pd.DataFrame({col: pd.Series(dtype=dt) for col, dt in tracking_col_names.items()})
+#    df = pd.concat([df,added_files],ignore_index=True)
+
+    # tracking DataFrame
+    tdf = create_empty_tracking_store()
+
     output_dir = os.path.dirname(file_path)
     file_name = os.path.splitext(os.path.basename(file_path))[0]
     # Try reading with different settings
@@ -52,8 +80,8 @@ def process_csv_file(file_path):
             try:
                 df = pd.read_csv(file_path, delimiter=delim, encoding=encoding, on_bad_lines='warn')
                 if not df.empty:
-                    process_dataframe(df, file_name, output_dir, file_path, input_delimiter=delim)
-                    return
+                    new_file = process_dataframe(df, file_name, output_dir, file_path, input_delimiter=delim)
+                    return add_to_tracking(tdf, new_file)
             except Exception as e:
                 print(f"Failed to read {file_path} with delimiter '{delim}' and encoding '{encoding}': {str(e)}")
     
@@ -65,6 +93,8 @@ def process_csv_file(file_path):
         print(content[:100])  # Print first 100 characters
     except Exception as e:
         print(f"Failed to read {file_path} as text: {str(e)}")
+
+    return tdf
 
 def test_lfc_search():
     """Debug test snippet from process_dataframe, to confirm that some odd LFC columns are being chosen
@@ -87,10 +117,13 @@ def test_lfc_search():
     print(f'log_fold_col:{log_fold_col}')
 
 
-def process_dataframe(df, sheet_name, output_dir, file_path, input_delimiter='\t'):
+def process_dataframe(df, sheet_name, output_dir, file_path, input_delimiter='\t')->pd.DataFrame:
     """processes dataframes to assess if the data relates to gene expression - looks for "log fold change" or similar
     in column titles
     """
+    # tracking DataFrame. There should be a maximum of one entry in the returned value because this function works on a single dataframe
+    tdf = create_empty_tracking_store()
+
     df.columns = df.columns.astype(str)
     log_fold_col = None
     for col in df.columns:
@@ -103,6 +136,8 @@ def process_dataframe(df, sheet_name, output_dir, file_path, input_delimiter='\t
     # If matching column is found, save sheet as CSV
     if log_fold_col:
         print(f'log fold column is {log_fold_col}')
+        # try to fix some odd characters
+#        sheet_name = sheet_name.encode(encoding="ascii",errors="backslashreplace")
         # remove characters not appropriate for filenames
         replacement_chars  = {" " : "",
                               "<" : "lessthan",
@@ -115,23 +150,29 @@ def process_dataframe(df, sheet_name, output_dir, file_path, input_delimiter='\t
                               "&" : "" }
         for old, new in replacement_chars.items():
             sheet_name = sheet_name.replace(old, new)
-        newfile = 'expdata_' + sheet_name
-        output_file = os.path.join(output_dir, f"{newfile}.csv")
+        new_filename = 'expdata_' + sheet_name
+        output_file = os.path.join(output_dir, f"{new_filename}.csv")
 
         if os.path.exists(output_file):
             original_filename = os.path.splitext(os.path.basename(file_path))[0]
-            output_file = os.path.join(output_dir, f"{newfile}_{original_filename}.csv")
+            new_filename = f"{new_filename}_{original_filename}.csv"
+            output_file = os.path.join(output_dir, new_filename)
 
         if input_delimiter == '\t':
             df.to_csv(output_file, index=False, sep=',')
         else:
             df.to_csv(output_file, index=False)
         print(f"Saved {sheet_name} as CSV: {output_file}")
+
+        # assume the pmid is the last component of the output dir
+        pmid = os.path.basename(output_dir)
+        tdf = add_to_tracking(tdf, tracking_entry(1,output_dir, pmid, new_filename, False, True, file_path, False, False, ''))
     else:
         print(f"Skipped {sheet_name} in {file_path}: No 'log fold change' column found")
 
+    return tdf
 
-def process_supp_data_folder(data_folder:str, article_file_path:str ):
+def process_supp_data_folder(data_folder:str, tracking_file_path:str ):
     """ 
     function process_supp_data_folder
 
@@ -150,28 +191,55 @@ def process_supp_data_folder(data_folder:str, article_file_path:str ):
         No direct exception handling/raising in this code    
 
     """
-    df = pd.read_csv(article_file_path)
+    df = load_tracking(tracking_file_path)
 
-    # only work on the entries that haven't been excluded
-    df = df[~df['exclude']]
+# The processing creates files that need to be added to the tracking, which can't be done inside the loop.
+    tdf  = create_empty_tracking_store()
+    local_tdf = create_empty_tracking_store()
+# TODO: remove loop iteration, do sthg more pythonic
+    for index, row in df.iterrows():
+        root = row['path']
+        file = row['file']
+        file_path = os.path.join(root, file)
+        # never process files that we wrote out on a previous iteration
+        if file.lower().startswith('expdata_'):
+            continue
+        print(f"Processing file: {file_path}")
+        if file.lower().endswith('.xlsx'):
+            local_tdf = process_excel_file(file_path)
+        elif file.lower().endswith('.xls'):
+            local_tdf = process_old_file(file_path)
+        elif file.lower().endswith(('.csv', '.tsv', '.txt')):
+            local_tdf = process_csv_file(file_path)
+        tdf = add_to_tracking(tdf,local_tdf)
+        # now exclude the source data
+        df.loc[int(index),'excl'] = True
+        df.loc[int(index),'step'] = 1
 
-    pmids = df['pmid'].tolist()
 
-    for pmid in pmids:
-        pmid_folder = os.path.join(data_folder, str(pmid))
-        for root, dirs, files in os.walk(pmid_folder):
-            for file in files:
-                # skip files that we wrote out on a previous iteration
-                if file.lower().startswith('expdata_'):
-                    continue
-                file_path = os.path.join(root, file)
-                print(f"Processing file: {file_path}")
-                if file.lower().endswith('.xlsx'):
-                    process_excel_file(file_path)
-                elif file.lower().endswith('.xls'):
-                    process_old_file(file_path)
-                elif file.lower().endswith(('.csv', '.tsv', '.txt')):
-                    process_csv_file(file_path)
+    # now the loop has finished add the accumulated tracking info into the main one
+    df = add_to_tracking(df, tdf)
+
+    # write out the updated information (should have the new files we just wrote out)
+    save_tracking(df, tracking_file_path)
+
+    # pmids = df['pmid'].tolist().uniq()
+
+    # for pmid in pmids:
+    #     pmid_folder = os.path.join(data_folder, str(pmid))
+    #     for root, dirs, files in os.walk(pmid_folder):
+    #         for file in files:
+    #             # skip files that we wrote out on a previous iteration
+    #             if file.lower().startswith('expdata_'):
+    #                 continue
+    #             file_path = os.path.join(root, file)
+    #             print(f"Processing file: {file_path}")
+    #             if file.lower().endswith('.xlsx'):
+    #                 process_excel_file(file_path)
+    #             elif file.lower().endswith('.xls'):
+    #                 process_old_file(file_path)
+    #             elif file.lower().endswith(('.csv', '.tsv', '.txt')):
+    #                 process_csv_file(file_path)
 
 def save_filenames(data_folder:str, article_file_path:str, save_out_file:str='supp_files.txt'):
     """
@@ -214,13 +282,29 @@ def save_filenames(data_folder:str, article_file_path:str, save_out_file:str='su
 
 
 if __name__ == '__main__':
-    main_dir = 'data'
+
+    # manage the command line options
+    parser = argparse.ArgumentParser(description='Convert downloaded supplementary data to graph precursor')
+    parser.add_argument('-i','--input_dir', default='data', help='Destination top-level directory for input data files (output files also written here)')
+    parser.add_argument('-t','--tracking_file', default='akg_tracking.xlsx', help='Tracking file name. This file is created in the top-level directory.')
+
+    # argparse populates an object using parse_args
+    # extract its members into a dict and from there into variables if used in more than one place
+    config = vars(parser.parse_args())
+
+    main_dir = config['input_dir']
+
     if not os.path.isdir(main_dir):
-        os.mkdir(main_dir)
-    article_file_path = os.path.join(main_dir, 'asd_article_metadata.csv')
-    if not os.path.isfile(article_file_path):
-        print(f"Error: running data_convert.py but {article_file_path} does not exist: run processing.py first ")
+        raise AKGException(f"data_convert: data directory {main_dir} must exist")
+    
+    tracking_file = config['tracking_file']
+
+    print(f'Processing directory {os.path.realpath(main_dir)}: creating tracking file {tracking_file} here')
+    tracking_file = os.path.join(main_dir, tracking_file)
+
+    create_tracking(main_dir, tracking_file)
 
     supp_data_folder = os.path.join(main_dir,"supp_data")
-    process_supp_data_folder(supp_data_folder, article_file_path)
-    save_filenames(supp_data_folder, article_file_path)
+    process_supp_data_folder(supp_data_folder, tracking_file)
+
+    # save_filenames(supp_data_folder, article_file_path)

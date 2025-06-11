@@ -5,35 +5,68 @@ import tempfile
 from akg import AKGException
 from processing import AkgException
 
+"""
+Tracking functions
+TODO: refactor to a class
+"""
+tracking_col_names = {'step':'int'
+                        , 'path':"str"
+                        , 'pmid':"str"
+                        , 'file':"str"
+                        , 'excl': "bool"
+                        , 'derived':"bool"
+                        , 'source':"str"
+                        , 'cleaned':'bool'
+                        , 'manual':"bool"
+                        , 'manualreason':"str"
+                        }
+
+def create_empty_tracking_store()->pd.DataFrame:
+    """
+    create_empty_tracking_store
+    Parameters: 
+    Returns:
+        an empty pandas dataframe with the correct column headers
+    """
+    return pd.DataFrame({col: pd.Series(dtype=dt) for col, dt in tracking_col_names.items()})
+
+def add_to_tracking(existing:pd.DataFrame, new:pd.DataFrame)->pd.DataFrame:
+    """"
+    Adds 'new' entry to existing tracking DataFrame
+
+    Parameters:
+    Both have the correct column headers
+        existing:   pd.DataFrame      a tracking store
+        new:        pd.DataFrame      a tracking store
+
+    Returns:
+        the content of existing, with new's entries added
+    """
+    return pd.concat([existing,new],ignore_index=True)
+
 def create_tracking(folder:str, name:str='akg_tracking.xlsx'):
     """
     Create the file that can be used to track the contents of 'folder' through the akg process
-    This will start as a pandas dataframe serialised to a csv file
-    It may evolve to a class.
+    This will start as a pandas dataframe serialised to a file
     """
     # create an empty dataframe
-    tracking_col_names = {'path':"str"
-                          , 'pmid':"str"
-                          , 'file':"str"
-                          , 'excl': "bool"
-                          , 'source':"str"
-                          , 'derived':"bool"
-                          , 'manual':"bool"
-                          , 'manualreason':"str"
-                          }
-    df = pd.DataFrame({col: pd.Series(dtype=dt) for col, dt in tracking_col_names.items()})
+    df = create_empty_tracking_store()
     print(f'Creating a tracking file {name} for the contents of folder:{folder}')
-    with open(name,'w') as tracker_file:
-        for dirpath, dirnames, filenames in os.walk(folder):
-            for filename in filenames:
-                pmid = os.path.basename(dirpath)
-                # assuming a PMID consists of 8 digits
-                if re.fullmatch(r'\d{8}',pmid):
-                    new = pd.DataFrame([{"path":dirpath,"pmid":pmid,"file":filename, "excl":True, "source":"","derived":False, "manual":True, "manualreason":""}])
-                    df = pd.concat([df,new],ignore_index=True)
-    df.to_csv(name, index=False)
-    with pd.ExcelWriter(name) as writer:
-        df.to_excel(writer,index=False,sheet_name='akg tracking', )  
+    for dirpath, dirnames, filenames in os.walk(folder):
+        for filename in filenames:
+            pmid = os.path.basename(dirpath)
+            # assuming a PMID consists of 8 digits
+            if re.fullmatch(r'\d{8}',pmid):
+                new = tracking_entry(0,dirpath,pmid,filename,False,False,'',False,True,'')
+                df = add_to_tracking(df,new)
+                
+    save_tracking(df, name)
+
+def tracking_entry(step:int, path:str, pmid:str, file:str, excl:bool, derived:bool, source:str, cleaned:bool, manual:bool, manualreason:str )->pd.DataFrame:
+    """
+    Format the provided data into a default tracking entry
+    """
+    return pd.DataFrame([{'step':step,"path":path,"pmid":pmid,"file":file, "excl":excl, "derived":derived,"source":source,"cleaned":cleaned, "manual":manual, "manualreason":manualreason}])
 
 def load_tracking(name:str='akg_tracking.xlsx')->pd.DataFrame:
     """
@@ -47,17 +80,27 @@ def load_tracking(name:str='akg_tracking.xlsx')->pd.DataFrame:
         df = pd.read_excel(xls, "akg tracking")  
 
     # I'm sure there's a better way:
+    df['step'] = df['step'].astype('int')
     df['excl'] = df['excl'].astype("bool")
     df['derived'] = df['derived'].astype("bool")
     df['manual'] = df['manual'].astype("bool")
+    df['cleaned'] = df['cleaned'].astype("bool")
 
     return df
 
+def save_tracking(df:pd.DataFrame, name:str='akg_tracking.xlsx'):
+    """
+    Save the tracking data to file
+    """
+    with pd.ExcelWriter(name) as writer:
+        df.to_excel(writer,index=False,sheet_name='akg tracking', )  
+
+
 if __name__ == "__main__":
-    # supp_path = os.path.join('data','supp_data')
-    # create_tracking(supp_path)
-    df = load_tracking()
-    print(df)
+    supp_path = os.path.join('data','supp_data')
+    create_tracking(supp_path)
+    # df = load_tracking()
+    # print(df)
 
 def test_create_tracking():
     """
@@ -84,7 +127,7 @@ def test_tracking_to_df():
     with tempfile.TemporaryDirectory(prefix="scratch_") as scratch_dir:
         print("Scratch dir created at:", scratch_dir)
     
-        track_file = os.path.join(scratch_dir, "testtrack.csv")
+        track_file = os.path.join(scratch_dir, "testtrack.xlsx")
         assert not os.path.exists(track_file)
 
         # create some content
