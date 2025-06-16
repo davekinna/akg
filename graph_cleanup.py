@@ -1,9 +1,14 @@
-"""script to add extra data cleaning to the file graph file - ensures any values are given correct datatype (double or data), 
-and that any blank values are removed. Stores final graph as cleaned_maingraph.nt
-"""
-import re
 
-def process_nt_file(input_file, output_file):
+import re
+import argparse
+import os
+from akg import AKGException
+
+def process_nt_file(input_file:str, output_file:str):
+    """Add extra data cleaning to the file graph file - ensures any values are given correct datatype (double or data), 
+    and that any blank values are removed.
+
+    """
     decimal_pattern = re.compile(r'"(-?\d+(\.\d+)?([eE][-+]?\d+)?)"')
     empty_literal_pattern = re.compile(r'\s+"(\s*|-)"(\^\^<[^>]+>)?\s*\.$')
     date_pattern = re.compile(r'<http://purl.org/dc/terms/date>\s+"(\d+)"\s+\.$')
@@ -26,6 +31,34 @@ def process_nt_file(input_file, output_file):
                 else:
                     outfile.write(line)
 
-input_file = 'main_graph.nt'
-output_file = 'cleaned_maingraph.nt'
-process_nt_file(input_file, output_file)
+
+if __name__ == '__main__':
+
+    parser = argparse.ArgumentParser(description='Cleanup knowledge graph .nt files and apply conventions')
+
+    parser.add_argument('-i','--input_dir', default='data', help='Destination top-level directory for data files.(input and output)')
+    parser.add_argument('-g','--graph_dir', default='graph', help='Subdirectory for graph files')
+    parser.add_argument('-n','--input', default='main_graph.nt', help='Input file')
+    parser.add_argument('-u','--output', default='cleaned_main_graph.nt', help='Output file')
+    parser.add_argument('-t','--tracking_file', default='akg_tracking.xlsx', help='Tracking file name. This file resides in the top-level directory.')
+
+    # argparse populates an object using parse_args
+    # extract its members into a dict and from there into variables if used in more than one place
+    config = vars(parser.parse_args())
+
+    main_dir = config['input_dir']
+    if not os.path.isdir(main_dir):
+        raise AKGException(f"data_convert: data directory {main_dir} must exist")
+
+    input_file = config['input']
+    output_file = config['output']
+    graph_dir = config['graph_dir']
+
+    tracking_file = config['tracking_file']
+    print(f'Processing directory {os.path.realpath(main_dir)}: using tracking file {tracking_file} here')
+    tracking_file = os.path.join(main_dir, tracking_file)
+
+    full_graph_path = os.path.join(main_dir,graph_dir,input_file)
+    full_graph_output = os.path.join(main_dir,graph_dir,output_file)
+
+    process_nt_file(full_graph_path, full_graph_output)
