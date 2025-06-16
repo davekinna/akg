@@ -19,6 +19,10 @@ tracking_col_names = {'step':'int'
                         , 'cleaned':'bool'
                         , 'manual':"bool"
                         , 'manualreason':"str"
+                        , 'lfc':"str"
+                        , 'graphfile':'str'
+                        , 'matched':'int'
+                        , 'unmatched':'int'
                         }
 
 def create_empty_tracking_store()->pd.DataFrame:
@@ -57,16 +61,18 @@ def create_tracking(folder:str, name:str='akg_tracking.xlsx'):
             pmid = os.path.basename(dirpath)
             # assuming a PMID consists of 8 digits
             if re.fullmatch(r'\d{8}',pmid):
-                new = tracking_entry(0,dirpath,pmid,filename,False,False,'',False,True,'')
+                new = tracking_entry(0,dirpath,pmid,filename,False,False,'',False,False,'','','', 0, 0)
                 df = add_to_tracking(df,new)
                 
     save_tracking(df, name)
 
-def tracking_entry(step:int, path:str, pmid:str, file:str, excl:bool, derived:bool, source:str, cleaned:bool, manual:bool, manualreason:str )->pd.DataFrame:
+def tracking_entry(step:int, path:str, pmid:str, file:str, excl:bool, derived:bool, source:str, cleaned:bool, manual:bool, manualreason:str, lfc:str,
+                   graphfile:str, matched:int, unmatched:int)->pd.DataFrame:
     """
     Format the provided data into a default tracking entry
     """
-    return pd.DataFrame([{'step':step,"path":path,"pmid":pmid,"file":file, "excl":excl, "derived":derived,"source":source,"cleaned":cleaned, "manual":manual, "manualreason":manualreason}])
+    return pd.DataFrame([{'step':step,"path":path,"pmid":pmid,"file":file, "excl":excl, "derived":derived,"source":source,"cleaned":cleaned, 
+                          "manual":manual, "manualreason":manualreason, 'lfc':lfc, 'graphfile':graphfile, 'matched':matched, 'unmatched':unmatched}])
 
 def load_tracking(name:str='akg_tracking.xlsx')->pd.DataFrame:
     """
@@ -85,6 +91,8 @@ def load_tracking(name:str='akg_tracking.xlsx')->pd.DataFrame:
     df['derived'] = df['derived'].astype("bool")
     df['manual'] = df['manual'].astype("bool")
     df['cleaned'] = df['cleaned'].astype("bool")
+    df['matched'] = df['matched'].astype('int')
+    df['unmatched'] = df['unmatched'].astype('int')
 
     return df
 

@@ -8,7 +8,7 @@ import csv
 import re
 import argparse
 from akg import AKGException
-from tracking import create_tracking, load_tracking, save_tracking, tracking_col_names, create_empty_tracking_store, add_to_tracking, tracking_entry
+from tracking import create_tracking, load_tracking, save_tracking, create_empty_tracking_store, add_to_tracking, tracking_entry
 
 def process_excel_file(file_path)->pd.DataFrame:
     """loads excel files into dataframes
@@ -150,12 +150,13 @@ def process_dataframe(df, sheet_name, output_dir, file_path, input_delimiter='\t
                               "&" : "" }
         for old, new in replacement_chars.items():
             sheet_name = sheet_name.replace(old, new)
-        new_filename = 'expdata_' + sheet_name
-        output_file = os.path.join(output_dir, f"{new_filename}.csv")
+        new_filestub = f'expdata_{sheet_name}'
+        new_filename = new_filestub+'.csv'
+        output_file = os.path.join(output_dir, new_filename)
 
         if os.path.exists(output_file):
             original_filename = os.path.splitext(os.path.basename(file_path))[0]
-            new_filename = f"{new_filename}_{original_filename}.csv"
+            new_filename = f"{new_filestub}_{original_filename}.csv"
             output_file = os.path.join(output_dir, new_filename)
 
         if input_delimiter == '\t':
@@ -166,7 +167,7 @@ def process_dataframe(df, sheet_name, output_dir, file_path, input_delimiter='\t
 
         # assume the pmid is the last component of the output dir
         pmid = os.path.basename(output_dir)
-        tdf = add_to_tracking(tdf, tracking_entry(1,output_dir, pmid, new_filename, False, True, file_path, False, False, ''))
+        tdf = add_to_tracking(tdf, tracking_entry(1,output_dir, pmid, new_filename, False, True, file_path, False, False, '', log_fold_col, '', 0, 0))
     else:
         print(f"Skipped {sheet_name} in {file_path}: No 'log fold change' column found")
 

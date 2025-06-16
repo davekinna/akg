@@ -1,6 +1,7 @@
 import pytest 
 import time
 import sys
+import os
 
 class AKGException(Exception):
     """
@@ -45,7 +46,11 @@ class GeneIdStore:
         # this is an optimisation
         self._ens:dict[str,str] = {}
         self._oth:dict[str,str] = {}
-        with open(source, 'r') as file:
+
+        # Assume the file is in the same location as this file (akg.py)
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        full_path = os.path.join(script_dir, source)
+        with open(full_path, 'r') as file:
             next(file)  
             lines = file.readlines()
             self._lines = [line.upper() for line in lines]
@@ -389,6 +394,15 @@ def test_ens_2():
 
 def test_grin2b():
     gb  = 'GRIN2B'
+
+    mygids = GeneIdStore()
+
+    r1 = mygids.get_gene_id(gb)
+
+    print(f"found: {r1}")
+
+def test_piwil1():
+    gb  = 'PIWIL1'
 
     mygids = GeneIdStore()
 
