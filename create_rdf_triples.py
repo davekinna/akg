@@ -250,7 +250,7 @@ if __name__ == '__main__':
                 graph = create_base_graph()
                 # add the metadata in to every graph, not big.
                 print(f"Processing file: {article_file_path}")
-                process_metadata_csv(article_file_path, global_graph)
+                process_metadata_csv(article_file_path, graph)
                 mg_before = matched_genes
                 ug_before = unmatched_genes
                 matched_genes, unmatched_genes = process_regular_csv(file_path, matched_genes, unmatched_genes, graph)
