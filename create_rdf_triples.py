@@ -21,6 +21,7 @@ except FileNotFoundError:
 # store persistent UUIDs for filenames
 filename_uuid_map = {}
 
+
 def get_or_create_uuid(key):
     """Creates a UUID for each separate dataset
     """
@@ -207,6 +208,9 @@ if __name__ == '__main__':
     graph_folder = os.path.join(main_dir, "graph")
     os.makedirs(graph_folder, exist_ok=True)
 
+    file_to_uuid = 'filename_uuid_map.json'
+    file_to_uuid_path = os.path.join(main_dir, file_to_uuid)
+
     matched_genes = 0
     unmatched_genes = 0 
     total_files_processed = 0
@@ -335,7 +339,7 @@ if __name__ == '__main__':
 #     print("Combined graph has been serialized to main_graph.nt")
 
     #store all the uuid dataset allocated names
-    with open('filename_uuid_map.json', 'w') as f:
+    with open(file_to_uuid_path, 'w') as f:
         json.dump(filename_uuid_map, f)
 
 

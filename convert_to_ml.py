@@ -2,9 +2,10 @@ import os
 import rdflib
 import networkx as nx
 import argparse
+from akg import AKGException
 
 def convert_file_to_ml(src_name:str, gml_name:str):
-    print(f'Converting {src_name}')
+    print(f'Converting {src_name} to {gml_name}')
     g = rdflib.Graph()
     g.parse(src_name, format="nt")
     # note the following only allows a single edge between two nodes
@@ -19,7 +20,7 @@ def convert_file_to_ml(src_name:str, gml_name:str):
         # add edge with the predicate as an edge attribute
         nx_g.add_edge(s_str, o_str, predicate=str(p))
 
-    # 3) Write GraphML
+    # Write GraphML
     nx.write_graphml(nx_g, gml_name)
 
 
@@ -44,7 +45,7 @@ def convert_to_ml(folder:str):
                     convert_file_to_ml(src_name, gml_name)
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Cleanup knowledge graph .nt files and apply conventions')
+    parser = argparse.ArgumentParser(description='Convert knowledge graph .nt files to graphml format for use in cytoscape or gephi.')
 
     parser.add_argument('-i','--input_dir', default='data', help='Destination top-level directory for data files.(input and output)')
     parser.add_argument('-g','--graph_dir', default='graph', help='Subdirectory for graph files')
