@@ -88,7 +88,7 @@ def process_metadata_csv(csv_file_path, graph):
                         graph.add((pmid_uri, DCT.publisher, Literal(value)))
 
     
-def process_regular_csv(csv_file_path, matched_genes, unmatched_genes, graph):
+def process_regular_csv(csv_file_path, matched_genes, unmatched_genes, graph, graph_folder=None):
     """processes the gene expression csv files (not the metadata file).
     Searches for relevant information, converts to triples while adding relevant prefixes.
     """
@@ -110,13 +110,22 @@ def process_regular_csv(csv_file_path, matched_genes, unmatched_genes, graph):
     # cached gene_id.txt data for faster lookup
     mygids = GeneIdStore()
 
+    # record the row uris/uuids that have been identified for this file, with their numeric index, so that we can identify them in metadata
+    row_uri_labels = {}
+    filename_row_uri_labels = f"{filename}_row_uri_labels.json"
+
     with open(csv_file_path, 'r') as csvfile:
         reader = csv.DictReader(csvfile)
+        rowIndex = 0
+        # Create a unique URI for each row in the dataset
+        # This is used to link the row to the dataset and other relevant information
         for row in reader:
             row_uuid = str(uuid.uuid4())
             row_uri = URN[row_uuid]
             graph.add((dataset_uri, EDAM.has_output, row_uri))
-            
+            # retain the row number: because this is to be used as a label, create as text now
+            row_uri_labels[row_uri] = f'row {rowIndex}'
+
             gene_added = log_added = pval_added = False
             
             # Try to find and process gene information, once match made, will add triple and continue
@@ -160,6 +169,15 @@ def process_regular_csv(csv_file_path, matched_genes, unmatched_genes, graph):
                         continue
 #                        predicate = URIRef(f"rdf:predicate/{column}")
 #                        graph.add((row_uri, predicate, Literal(value)))
+            rowIndex += 1
+    # Save the row URI labels to a file for later reference
+    if graph_folder:
+        filename_row_uri_labels_path = os.path.join(graph_folder, filename_row_uri_labels)
+        row_uri_labels = {str(k): v for k, v in row_uri_labels.items()}  # Convert keys to strings for JSON serialization
+        with open(filename_row_uri_labels_path, 'w') as f:
+            json.dump(row_uri_labels, f)
+    else:
+        print(f"Warning: graph_folder not provided, row_uri_labels not saved to {filename_row_uri_labels}")
     return matched_genes, unmatched_genes
 
 def test_unicode_bug_1():
@@ -257,7 +275,7 @@ if __name__ == '__main__':
                 process_metadata_csv(article_file_path, graph)
                 mg_before = matched_genes
                 ug_before = unmatched_genes
-                matched_genes, unmatched_genes = process_regular_csv(file_path, matched_genes, unmatched_genes, graph)
+                matched_genes, unmatched_genes = process_regular_csv(file_path, matched_genes, unmatched_genes, graph, graph_folder)
                 print(f"Processing file: {file_path} complete")
                 graph_file = os.path.join(graph_folder, f'graph_{file}.nt')
                 graph.serialize(destination=graph_file, format='nt', encoding= "utf-8" )

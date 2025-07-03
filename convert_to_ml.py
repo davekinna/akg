@@ -11,6 +11,12 @@ def convert_file_to_ml(src_name:str, gml_name:str):
     # note the following only allows a single edge between two nodes
     nx_g = nx.DiGraph()
 
+    # Iterate over the triples in the RDF graph and add them to the networkx graph
+    # The subject and object are nodes, the predicate is an edge attribute
+    # Note that the subject and object are converted to strings, which is necessary for networkx
+    # to handle them as nodes. This means that if the same node appears with different URIs,
+    # they will be treated as different nodes.
+    print(f'Number of triples in {src_name}: {len(g)}')
     for s, p, o in g:
         s_str = str(s)
         o_str = str(o)
@@ -19,6 +25,10 @@ def convert_file_to_ml(src_name:str, gml_name:str):
         nx_g.add_node(o_str)
         # add edge with the predicate as an edge attribute
         nx_g.add_edge(s_str, o_str, predicate=str(p))
+
+    # Set node attributes
+    for edge in nx_g.edges():
+        print(edge[0], edge[1])
 
     # Write GraphML
     nx.write_graphml(nx_g, gml_name)
