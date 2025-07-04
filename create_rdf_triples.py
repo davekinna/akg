@@ -8,42 +8,15 @@ from rdflib.namespace import XSD
 import uuid
 import json
 import pandas as pd
-from akg import GeneIdStore, AKGException
+from akg import GeneIdStore, AKGException, FilenameUUIDMap
 import argparse
 from tracking import create_tracking, load_tracking, save_tracking, create_empty_tracking_store, add_to_tracking, tracking_entry
 
-try:
-    with open('filename_uuid_map.json', 'r') as f:
-        filename_uuid_map = json.load(f)
-except FileNotFoundError:
-    filename_uuid_map = {}
+from akg import BIOLINK, ENSEMBL, NCBIGENE, RDFS, RDF, SCHEMA, EDAM, DOI, DCT, PMC, OWL, MONARCH, URN
 
-# store persistent UUIDs for filenames
-filename_uuid_map = {}
-
-
-def get_or_create_uuid(key):
-    """Creates a UUID for each separate dataset
-    """
-    if key not in filename_uuid_map:
-        filename_uuid_map[key] = str(uuid.uuid4())
-    return filename_uuid_map[key]
-
-# Define namespaces and bind to prefixes
-BIOLINK = Namespace("https://w3id.org/biolink/vocab/")
-ENSEMBL = Namespace("http://identifiers.org/ensembl/")
-NCBIGENE = Namespace("http://identifiers.org/ncbigene/")
-RDFS = Namespace("http://www.w3.org/2000/01/rdf-schema#")
-RDF = Namespace("http://www.w3.org/1999/02/22-rdf-syntax-ns#")
-SCHEMA = Namespace("https://schema.org/")
-EDAM = Namespace("http://edamontology.org/")
-DOI = Namespace("https://doi.org/")
-DCT = Namespace("http://purl.org/dc/terms/")
-PMC = Namespace("https://pubmed.ncbi.nlm.nih.gov/")
-OWL = Namespace("http://www.w3.org/2002/07/owl#")
-MONARCH = Namespace("https://monarchinitiative.org/")
-URN = Namespace("urn:uuid:")
-
+# Create a global instance of FilenameUUIDMap to manage UUIDs for filenames
+# actually set this up in the main function, so that it can be configured from the command line
+g_filename_uuid_map = None
 
 def create_base_graph():
     graph = rdflib.Graph()
@@ -88,14 +61,14 @@ def process_metadata_csv(csv_file_path, graph):
                         graph.add((pmid_uri, DCT.publisher, Literal(value)))
 
     
-def process_regular_csv(csv_file_path, matched_genes, unmatched_genes, graph, graph_folder=None):
+def process_regular_csv(csv_file_path, matched_genes, unmatched_genes, graph, graph_file):
     """processes the gene expression csv files (not the metadata file).
     Searches for relevant information, converts to triples while adding relevant prefixes.
     """
     filename = os.path.splitext(os.path.basename(csv_file_path))[0]
     pmid = os.path.basename(os.path.dirname(csv_file_path))
-    
-    dataset_uuid = get_or_create_uuid(filename)
+
+    dataset_uuid = g_filename_uuid_map.get_uuid(filename)
     dataset_uri = URN[dataset_uuid]
     pmid_uri = PMC[pmid]
     
@@ -136,6 +109,7 @@ def process_regular_csv(csv_file_path, matched_genes, unmatched_genes, graph, gr
                     if monarch_uri:
                         full_monarch_uri = MONARCH[monarch_uri]
                         graph.add((row_uri, BIOLINK.Gene, full_monarch_uri))
+                        print(f"Added gene information for {value}: {full_monarch_uri}")
                         gene_added = True
                         matched_genes += 1
                     else:
@@ -171,13 +145,15 @@ def process_regular_csv(csv_file_path, matched_genes, unmatched_genes, graph, gr
 #                        graph.add((row_uri, predicate, Literal(value)))
             rowIndex += 1
     # Save the row URI labels to a file for later reference
-    if graph_folder:
-        filename_row_uri_labels_path = os.path.join(graph_folder, filename_row_uri_labels)
+    if graph_file:
+        graph.serialize(destination=graph_file, format='nt', encoding= "utf-8" )
+        filename_row_uri_labels_path = graph_file + '.row_uri_labels.json'
         row_uri_labels = {str(k): v for k, v in row_uri_labels.items()}  # Convert keys to strings for JSON serialization
         with open(filename_row_uri_labels_path, 'w') as f:
             json.dump(row_uri_labels, f)
     else:
-        print(f"Warning: graph_folder not provided, row_uri_labels not saved to {filename_row_uri_labels}")
+        print(f"Warning: graph_folder not provided, row_uri_labels not saved to {filename_row_uri_labels_path}")
+    
     return matched_genes, unmatched_genes
 
 def test_unicode_bug_1():
@@ -227,7 +203,11 @@ if __name__ == '__main__':
     os.makedirs(graph_folder, exist_ok=True)
 
     file_to_uuid = 'filename_uuid_map.json'
-    file_to_uuid_path = os.path.join(main_dir, file_to_uuid)
+    file_to_uuid_path = os.path.join(graph_folder, file_to_uuid)
+    if not os.path.isfile(file_to_uuid_path):
+        print(f"Creating a new {file_to_uuid_path} file.")
+    # this is persistent storage for filename to UUID mapping
+    g_filename_uuid_map = FilenameUUIDMap(file_to_uuid_path)
 
     matched_genes = 0
     unmatched_genes = 0 
@@ -275,10 +255,10 @@ if __name__ == '__main__':
                 process_metadata_csv(article_file_path, graph)
                 mg_before = matched_genes
                 ug_before = unmatched_genes
-                matched_genes, unmatched_genes = process_regular_csv(file_path, matched_genes, unmatched_genes, graph, graph_folder)
-                print(f"Processing file: {file_path} complete")
                 graph_file = os.path.join(graph_folder, f'graph_{file}.nt')
-                graph.serialize(destination=graph_file, format='nt', encoding= "utf-8" )
+
+                matched_genes, unmatched_genes = process_regular_csv(file_path, matched_genes, unmatched_genes, graph, graph_file)
+                print(f"Processing file: {file_path} complete")
                 print(f"Combined graph has been serialized to {graph_file}")
                 tdf.loc[index,'graphfile'] = graph_file
                 tdf.loc[index, 'unmatched'] = (unmatched_genes-ug_before)
@@ -355,9 +335,5 @@ if __name__ == '__main__':
 #     print(f"Total genes processed: {matched_genes + unmatched_genes}")
 #     graph.serialize(destination='main_graph.nt', format='nt', encoding= "utf-8" )
 #     print("Combined graph has been serialized to main_graph.nt")
-
-    #store all the uuid dataset allocated names
-    with open(file_to_uuid_path, 'w') as f:
-        json.dump(filename_uuid_map, f)
 
 

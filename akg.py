@@ -1,7 +1,10 @@
+from flask import json
 import pytest 
 import time
 import sys
 import os
+import uuid
+from rdflib import Namespace
 
 class AKGException(Exception):
     """
@@ -35,6 +38,52 @@ def get_gene_id(gene_name) -> str:
                 return line.split('\t')[0]
     #print(f"HGNC ID not found for {gene_name}")
     return ''
+
+class FilenameUUIDMap:
+    """
+    store persistent UUIDs for filenames
+    Example:
+        my_map = FilenameUUIDMap()
+        uuid = my_map.get_uuid('example.txt')
+    """
+    def __init__(self, filename='filename_uuid_map.json'):
+        self.filename = filename
+        self.map = {}
+        try:
+            with open(self.filename, 'r') as f:
+                self.map = json.load(f)
+            # create the reverse lookup too
+            self.update_reverse_map()
+        except FileNotFoundError:
+            self.map = {}
+        except json.JSONDecodeError:
+            print(f"Error decoding JSON from {self.filename}, starting with an empty map")
+    def update_reverse_map(self):
+        """ 
+        Update the reverse map from the main map.
+        """
+        self.reverse_map = {v: k for k, v in self.map.items()}
+    def get_uuid(self, filename):
+        """
+        Get the UUID for a given filename, or create a new one if it doesn't exist.
+        """
+        if filename not in self.map:
+            self.map[filename] = str(uuid.uuid4())
+            self.update_reverse_map
+            self.save()
+        return self.map[filename]
+    def get_filename_from_uuid(self, uuid):
+        """
+        Get the filename for a given UUID.
+        """
+        return self.reverse_map.get(uuid, None)
+
+    def save(self):
+        """
+        Save the current map to the JSON file.
+        """
+        with open(self.filename, 'w') as f:
+            json.dump(self.map, f)
 
 class GeneIdStore:
     """
@@ -114,7 +163,23 @@ class GeneIdStore:
         print(f"HGNC ID not found for {gene_name}")
         sys.stdout.flush()
         return ''
-        
+
+# define the namespaces used in the RDF data
+BIOLINK = Namespace("https://w3id.org/biolink/vocab/")
+ENSEMBL = Namespace("http://identifiers.org/ensembl/")
+NCBIGENE = Namespace("http://identifiers.org/ncbigene/")
+RDFS = Namespace("http://www.w3.org/2000/01/rdf-schema#")
+RDF = Namespace("http://www.w3.org/1999/02/22-rdf-syntax-ns#")
+SCHEMA = Namespace("https://schema.org/")
+EDAM = Namespace("http://edamontology.org/")
+DOI = Namespace("https://doi.org/")
+DCT = Namespace("http://purl.org/dc/terms/")
+PMC = Namespace("https://pubmed.ncbi.nlm.nih.gov/")
+OWL = Namespace("http://www.w3.org/2002/07/owl#")
+MONARCH = Namespace("https://monarchinitiative.org/")
+URN = Namespace("urn:uuid:")
+
+
 # run the tests on the command line with 
 # pytest -v akg.py
 # (if you don't name the file, pytest will try to discover all in the current directory)
