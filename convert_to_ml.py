@@ -86,7 +86,7 @@ def convert_file_to_ml(src_name:str, gml_name:str, filename_uuid_map:FilenameUUI
                 odid = o_str.split('/')[-1]
                 odid = odid.split(':')[-1] # remove the uid:uuid: prefix
                 uuid_filename = filename_uuid_map.get_filename_from_uuid(odid)
-                s['dataset'] = uuid_filename  
+                o['dataset'] = uuid_filename  
         else:
             # the subject is not a PubMed ID, so for 'have_output' edges, the object is a row - so add the row label
             # (could also just add a row label for all nodes, but this is more efficient)
@@ -105,6 +105,19 @@ def convert_file_to_ml(src_name:str, gml_name:str, filename_uuid_map:FilenameUUI
                 o['log fold change'] = o_str
             else:
                 print(f'Unknown predicate {p} for edge {s_str} -> {o_str}, skipping label')
+
+    # Assign a 'type' attribute to each node based on which of the columns have nonblank values.
+    # The first match in this list will be used.
+    attributes_to_check = ['PMID', 'dataset', 'row', 'gene', 'p-Value', 'log fold change']
+
+    # --- 3. Scan the graph and assign the 'type' attribute ---
+    for node_id, attrs in nx_g.nodes(data=True):
+        for attr_name in attributes_to_check:
+            if attrs.get(attr_name):
+                # Assign the new 'type' attribute with the name of the attribute found.
+                nx_g.nodes[node_id]['type'] = attr_name
+                # Break the inner loop to stop checking once a type is assigned.
+                break
 
     # Write GraphML
     nx.write_graphml(nx_g, gml_name)
