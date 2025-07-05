@@ -175,6 +175,7 @@ if __name__ == '__main__':
     parser.add_argument('-t','--tracking_file', default='akg_tracking.xlsx', help='Tracking file name. This file is created in the top-level directory.')
     parser.add_argument('-f','--per_file', action='store_true', help="Create one graph per data file (default is one graph)")
     parser.add_argument('-p','--per_pmid', action='store_true', help="Create one graph per PMID (default is one graph). Overridden by per_file)")
+    parser.add_argument('-m','--metadata', action='store_true', help="Process the article metadata file (default is to process all data files)")
 
     # argparse populates an object using parse_args
     # extract its members into a dict and from there into variables if used in more than one place
@@ -183,6 +184,7 @@ if __name__ == '__main__':
     # note that per_file is taken if oth are set true
     per_file = config['per_file']
     per_pmid = config['per_pmid']
+    metadata = config['metadata']
 
     main_dir = config['input_dir']
 
@@ -251,8 +253,12 @@ if __name__ == '__main__':
             if per_file:
                 graph = create_base_graph()
                 # add the metadata in to every graph, not big.
-                print(f"Processing file: {article_file_path}")
-                process_metadata_csv(article_file_path, graph)
+                if metadata:
+                    print(f"Processing file: {article_file_path}")
+                    process_metadata_csv(article_file_path, graph)
+                else:
+                    print(f"Skipping metadata processing for file: {article_file_path}")
+                    
                 mg_before = matched_genes
                 ug_before = unmatched_genes
                 graph_file = os.path.join(graph_folder, f'graph_{file}.nt')
