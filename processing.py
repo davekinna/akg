@@ -19,18 +19,7 @@ from functools import reduce
 from metapub import PubMedFetcher
 from selenium import webdriver
 from urllib.parse import urljoin
-
-class AkgException(Exception):
-    """
-    Custom exception for naming runtime error conditions that are detected and handled by this code
-    Simple text-only message, using the base class.
-    TODO: #9 move into a separate package
-
-    Usage:
-        raise AkgException("Something wrong happened")
-    """
-    # no actual implementation needed: the type of this class is all that is needed to recognise and use it
-    pass
+from akg import AkgException
 
 def get_search_result():
     """Article search, returning PMIDs for articles matching terms relating to Autism and gene expression"""

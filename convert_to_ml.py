@@ -17,6 +17,8 @@ ens_str = str(ENSEMBL.id) # "http://identifiers.org/ensembl/"
 ncbi_str = str(NCBIGENE.id) # "http://identifiers.org/ncbigene/"
 edam_3754_str = str(EDAM['data_3754']) # "http://edamontology.org/data_3754" - used to link a row to a p-Value
 edam_1669_str = str(EDAM['data_1669']) # "http://edamontology.org/data_1669" - used to link a row to a log fold change
+dct_str = str(DCT['identifier']) # "http://purl.org/dc/terms/identifier" - linked to a PMID
+rdf_str = str(RDF.type) # "http://www.w3.org/1999/02/22-rdf-syntax-ns#type" - used to link a row to a type
 
 def convert_file_to_ml(src_name:str, gml_name:str, filename_uuid_map:FilenameUUIDMap=None):
     print(f'Converting {src_name} to {gml_name}')
@@ -87,6 +89,9 @@ def convert_file_to_ml(src_name:str, gml_name:str, filename_uuid_map:FilenameUUI
                 odid = odid.split(':')[-1] # remove the uid:uuid: prefix
                 uuid_filename = filename_uuid_map.get_filename_from_uuid(odid)
                 o['dataset'] = uuid_filename  
+            elif nx_g[s_str][o_str]['predicate'] == rdf_str:  
+                o['identifier flag'] = 'PMID'  # this is a RDF identifier edge, so mark the object as an identifier
+
         else:
             # the subject is not a PubMed ID, so for 'have_output' edges, the object is a row - so add the row label
             # (could also just add a row label for all nodes, but this is more efficient)
@@ -99,16 +104,16 @@ def convert_file_to_ml(src_name:str, gml_name:str, filename_uuid_map:FilenameUUI
                     o['row'] = o_str
             elif p == blg_str or p == ens_str or p == ncbi_str or p == bls_str:
                 o['gene'] = o_str.split('/')[-1]  # Add the gene ID as a node attribute, but remove the URI prefix
-            elif p == edam_3754_str:
-                    o['p-Value'] = o_str
             elif p == edam_1669_str:
+                    o['p-Value'] = o_str
+            elif p == edam_3754_str:
                 o['log fold change'] = o_str
             else:
                 print(f'Unknown predicate {p} for edge {s_str} -> {o_str}, skipping label')
 
     # Assign a 'type' attribute to each node based on which of the columns have nonblank values.
     # The first match in this list will be used.
-    attributes_to_check = ['PMID', 'dataset', 'row', 'gene', 'p-Value', 'log fold change']
+    attributes_to_check = ['PMID', 'dataset', 'row', 'gene', 'p-Value', 'log fold change', 'identifier flag']
 
     # --- 3. Scan the graph and assign the 'type' attribute ---
     for node_id, attrs in nx_g.nodes(data=True):
@@ -116,7 +121,10 @@ def convert_file_to_ml(src_name:str, gml_name:str, filename_uuid_map:FilenameUUI
             if attrs.get(attr_name):
                 # Assign the new 'type' attribute with the name of the attribute found.
                 nx_g.nodes[node_id]['type'] = attr_name
-                # Break the inner loop to stop checking once a type is assigned.
+                nx_g.nodes[node_id]['label'] = attrs[attr_name]  # Use the attribute value as the label for the node
+                # If the attribute is 'identifier flag', set the label to 'PMID' or 'dataset' based on the value.
+                if attr_name == 'identifier flag':
+                    nx_g.nodes[node_id]['label'] = 'ID'  # Set a generic label for identifier nodes'
                 break
 
     # Write GraphML

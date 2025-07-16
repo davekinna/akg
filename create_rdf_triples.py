@@ -73,6 +73,7 @@ def process_regular_csv(csv_file_path, matched_genes, unmatched_genes, graph, gr
     pmid_uri = PMC[pmid]
     
     graph.add((pmid_uri, EDAM.has_output, dataset_uri))
+    #todo: #29 understand why this is needed, but it is in the original code
     graph.add((pmid_uri, RDF.type, DCT.identifier))
     
     #lists of data column headers to match, with most preferred match given first.
@@ -258,7 +259,7 @@ if __name__ == '__main__':
                     process_metadata_csv(article_file_path, graph)
                 else:
                     print(f"Skipping metadata processing for file: {article_file_path}")
-                    
+
                 mg_before = matched_genes
                 ug_before = unmatched_genes
                 graph_file = os.path.join(graph_folder, f'graph_{file}.nt')
