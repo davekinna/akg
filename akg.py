@@ -171,6 +171,7 @@ NCBIGENE = Namespace("http://identifiers.org/ncbigene/")
 RDFS = Namespace("http://www.w3.org/2000/01/rdf-schema#")
 RDF = Namespace("http://www.w3.org/1999/02/22-rdf-syntax-ns#")
 SCHEMA = Namespace("https://schema.org/")
+# next one is not https.
 EDAM = Namespace("http://edamontology.org/")
 DOI = Namespace("https://doi.org/")
 DCT = Namespace("http://purl.org/dc/terms/")
