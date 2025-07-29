@@ -7,7 +7,15 @@ The Birkbeck ASD Knowledge Graph
 * Build on the work of https://github.com/tamjhill/ASDProject
 
 ## Workflow for using the code
-Outline of the project and code:
+This section is an outline of the project and available code.
+
+All code files named below have a command line interface that give some control of configuration. Type, for example:
+```
+python data_convert.py --help
+```
+to identify these.
+
+Steps in creating and using a graph are as follows:
 
 1. finding relevant articles
     - processing.py
@@ -32,14 +40,19 @@ python data_convert.py -i <top_level_directory>
 ```
 The derived dataset files are named expdata_<filename>.csv, where <filename> is the data file that it came from. These are in the same directory as the datafile itself.
 
-By default this will create an excel spreadsheet file 'akg_tracking.xlsx', with one line per data file, and then one line per derived dataset file.
+4. Inspection and manual exclusion of data.
+data_convert.py this will create an excel spreadsheet 'tracking' file (by default named 'akg_tracking.xlsx'), with one line per downloaded supplementary data file, and then one line per derived dataset file.
 The derived dataset file lines include the name of the data file they were generated from.
-You can exclude a dataset from subsequent processing by setting the 'excl' column to TRUE (save and close the spreadsheet before using this).
 
-4. data cleaning
+Inspect the tracking file for dataset lines where the 'log fold change' column has been incorrectly identified and exclude them from subsequent processing. You can do this by setting the 'excl' column to TRUE (save and close the spreadsheet before moving to the next step).
+   
+6. data cleaning
     - csv_data_cleaning.py 
 
 Use this as follows:
+```
+python csv_data_cleaning.py
+```
 
 6. mapping to rdf triples
     - create_rdf_triples.py
