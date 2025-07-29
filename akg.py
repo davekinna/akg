@@ -5,6 +5,9 @@ import sys
 import os
 import uuid
 from rdflib import Namespace
+import logging
+
+akg_logger = logging.getLogger('akg')
 
 class AKGException(Exception):
     """
