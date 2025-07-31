@@ -7,7 +7,38 @@ import uuid
 from rdflib import Namespace
 import logging
 
-akg_logger = logging.getLogger('akg')
+# Set up logging
+def akg_logging_config(filename:str):
+    """
+    Simple shared logging configuration for functions in this project. Log messages will be
+    timestamped and at the common level defined below.
+    Note this configuration also includes append mode, so repeat invocations will not overwrite the log file.
+    Because the data is timestamped, data will not be lost but the file may grow large.
+    In AKG each separate program has a separate log file including the program name in the filename.
+
+    Parameters:
+        filename (str): The name of the log file to create.
+    Returns:
+        None
+    
+    To use this:
+    import logging
+    from akg import akg_logging_config
+    akg_logging_config('file_name_here.log')
+
+    Then from within a function, use:
+    logging.info("info text")
+    logging.error("error text")
+    logging.warning("warning text")
+    logging.debug("debug text")
+    
+    Invoking through 'logging' uses the singleton instance of the logging module, so it is not necessary to pass the logger around, 
+    and the same log file will be found by logging calls in other functions once akg_logging_config has been called during that 
+    run of the program.
+    """
+    logging.basicConfig(level=logging.INFO, filename=filename, filemode='a',
+                        format='%(asctime)s - %(levelname)s - %(message)s')
+    logging.info("AKG logging started")
 
 class AKGException(Exception):
     """

@@ -19,7 +19,7 @@ from functools import reduce
 from metapub import PubMedFetcher
 from selenium import webdriver
 from urllib.parse import urljoin
-from akg import AkgException
+from akg import AKGException
 
 def get_search_result():
     """Article search, returning PMIDs for articles matching terms relating to Autism and gene expression"""
@@ -382,7 +382,7 @@ def main():
                     pass
             print("All articles and data retrieved")
         return 
-    except AkgException as e:
+    except AKGException as e:
         print(e)
         sys.exit(0)
 

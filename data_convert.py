@@ -1,5 +1,6 @@
 """takes excel, csv, tsv or txt files retrieved from pubmed, checks if they contain a column re. log fold changes, and saves sheet as csv file"""
 
+import logging
 import pandas as pd
 import os
 from openpyxl import load_workbook
@@ -7,7 +8,7 @@ import xlrd
 import csv
 import re
 import argparse
-from akg import AKGException
+from akg import AKGException, akg_logging_config
 from tracking import create_tracking, load_tracking, save_tracking, create_empty_tracking_store, add_to_tracking, tracking_entry
 
 def process_excel_file(file_path)->pd.DataFrame:
@@ -26,7 +27,7 @@ def process_excel_file(file_path)->pd.DataFrame:
             tdf = add_to_tracking(tdf, new_file)
 
     except Exception as e:
-        print(f"Failed to process excel file: {file_path}: {str(e)}")
+        logging.error(f"Failed to process excel file: {file_path}: {str(e)}")
 
     return tdf
 
@@ -40,7 +41,7 @@ def process_old_file(file_path)->pd.DataFrame:
         wb = xlrd.open_workbook(file_path)
         output_dir = os.path.dirname(file_path)
         for sheet in wb.sheets():
-            print(f"Processing sheet: {sheet.name}")
+            logging.info(f"Processing sheet: {sheet.name}")
             headers = [sheet.cell_value(0, col) for col in range(sheet.ncols)]
             data = [
                 [sheet.cell_value(row, col) for col in range(sheet.ncols)]
@@ -52,7 +53,7 @@ def process_old_file(file_path)->pd.DataFrame:
             tdf = add_to_tracking(tdf, new_file)
 
     except Exception as e:
-        print(f"Failed to process 'old' file: {file_path}: {str(e)}")
+        logging.error(f"Failed to process 'old' file: {file_path}: {str(e)}")
 
     return tdf
 
@@ -83,16 +84,16 @@ def process_csv_file(file_path:str)->pd.DataFrame:
                     new_file = process_dataframe(df, file_name, output_dir, file_path, input_delimiter=delim)
                     return add_to_tracking(tdf, new_file)
             except Exception as e:
-                print(f"Failed to read {file_path} with delimiter '{delim}' and encoding '{encoding}': {str(e)}")
-    
+                logging.error(f"Failed to read {file_path} with delimiter '{delim}' and encoding '{encoding}': {str(e)}")
+
     # If all attempts fail, try reading as plain text
     try:
         with open(file_path, 'r', encoding='utf-8') as file:
             content = file.read()
-        print(f"File {file_path} couldn't be processed as CSV. Content preview:")
-        print(content[:100])  # Print first 100 characters
+        logging.info(f"File {file_path} couldn't be processed as CSV. Content preview:")
+        logging.info(content[:100])  # Print first 100 characters
     except Exception as e:
-        print(f"Failed to read {file_path} as text: {str(e)}")
+        logging.error(f"Failed to read {file_path} as text: {str(e)}")
 
     return tdf
 
@@ -135,7 +136,7 @@ def process_dataframe(df, sheet_name, output_dir, file_path, input_delimiter='\t
     
     # If matching column is found, save sheet as CSV
     if log_fold_col:
-        print(f'log fold column is {log_fold_col}')
+        logging.info(f'log fold column is {log_fold_col}')
         # try to fix some odd characters
 #        sheet_name = sheet_name.encode(encoding="ascii",errors="backslashreplace")
         # remove characters not appropriate for filenames
@@ -163,13 +164,13 @@ def process_dataframe(df, sheet_name, output_dir, file_path, input_delimiter='\t
             df.to_csv(output_file, index=False, sep=',')
         else:
             df.to_csv(output_file, index=False)
-        print(f"Saved {sheet_name} as CSV: {output_file}")
+        logging.info(f"Saved {sheet_name} as CSV: {output_file}")
 
         # assume the pmid is the last component of the output dir
         pmid = os.path.basename(output_dir)
         tdf = add_to_tracking(tdf, tracking_entry(1,output_dir, pmid, new_filename, False, True, file_path, False, False, '', log_fold_col, '', 0, 0))
     else:
-        print(f"Skipped {sheet_name} in {file_path}: No 'log fold change' column found")
+        logging.info(f"Skipped {sheet_name} in {file_path}: No 'log fold change' column found")
 
     return tdf
 
@@ -204,8 +205,9 @@ def process_supp_data_folder(data_folder:str, tracking_file_path:str ):
         file_path = os.path.join(root, file)
         # never process files that we wrote out on a previous iteration
         if file.lower().startswith('expdata_'):
+            logging.info(f"Skipping file: {file_path}")
             continue
-        print(f"Processing file: {file_path}")
+        logging.info(f"Processing file: {file_path}")
         if file.lower().endswith('.xlsx'):
             local_tdf = process_excel_file(file_path)
         elif file.lower().endswith('.xls'):
@@ -288,6 +290,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Convert downloaded supplementary data to graph precursor')
     parser.add_argument('-i','--input_dir', default='data', help='Destination top-level directory for input data files (output files also written here)')
     parser.add_argument('-t','--tracking_file', default='akg_tracking.xlsx', help='Tracking file name. This file is created in the top-level directory.')
+    parser.add_argument('-l', '--log', default='data_convert.log', help='Log file name. This file is created in the top-level directory.')
 
     # argparse populates an object using parse_args
     # extract its members into a dict and from there into variables if used in more than one place
@@ -296,12 +299,19 @@ if __name__ == '__main__':
     main_dir = config['input_dir']
 
     if not os.path.isdir(main_dir):
-        raise AKGException(f"data_convert: data directory {main_dir} must exist")
-    
+        raise AKGException(f"data_convert: data directory {main_dir} must exist") 
+
+    akg_logging_config(os.path.join(main_dir, config['log']))
+    logging.info(f'Starting data_convert in {main_dir}')
+
+    # create the tracking file    
     tracking_file = config['tracking_file']
 
-    print(f'Processing directory {os.path.realpath(main_dir)}: creating tracking file {tracking_file} here')
+    logging.info(f'Processing directory {os.path.realpath(main_dir)}: creating tracking file {tracking_file} here')
     tracking_file = os.path.join(main_dir, tracking_file)
+
+    log_file = config['log']
+    log_file = os.path.join(main_dir, log_file)
 
     create_tracking(main_dir, tracking_file)
 

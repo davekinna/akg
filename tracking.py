@@ -3,8 +3,7 @@ import re
 import pandas as pd
 import tempfile
 from akg import AKGException
-from processing import AkgException
-
+import logging
 """
 Tracking functions
 TODO: refactor to a class
@@ -55,7 +54,7 @@ def create_tracking(folder:str, name:str='akg_tracking.xlsx'):
     """
     # create an empty dataframe
     df = create_empty_tracking_store()
-    print(f'Creating a tracking file {name} for the contents of folder:{folder}')
+    logging.info(f'Creating a tracking file {name} for the contents of folder:{folder}')
     for dirpath, dirnames, filenames in os.walk(folder):
         for filename in filenames:
             pmid = os.path.basename(dirpath)
@@ -80,7 +79,7 @@ def load_tracking(name:str='akg_tracking.xlsx')->pd.DataFrame:
     """
 
     if not os.path.exists(name):
-        raise AkgException(f'Tracking file {name} does not exist')
+        raise AKGException(f'Tracking file {name} does not exist')
 
     with pd.ExcelFile(name) as xls:
         df = pd.read_excel(xls, "akg tracking")  
