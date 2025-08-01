@@ -8,10 +8,10 @@ from rdflib.namespace import XSD
 import uuid
 import json
 import pandas as pd
-from akg import GeneIdStore, AKGException, FilenameUUIDMap
+from akg import GeneIdStore, AKGException, FilenameUUIDMap, akg_logging_config
 import argparse
 from tracking import create_tracking, load_tracking, save_tracking, create_empty_tracking_store, add_to_tracking, tracking_entry
-
+import logging
 from akg import BIOLINK, ENSEMBL, NCBIGENE, RDFS, RDF, SCHEMA, EDAM, DOI, DCT, PMC, OWL, MONARCH, URN
 
 # Create a global instance of FilenameUUIDMap to manage UUIDs for filenames
@@ -88,12 +88,18 @@ def process_regular_csv(csv_file_path, matched_genes, unmatched_genes, graph, gr
     row_uri_labels = {}
     filename_row_uri_labels = f"{filename}_row_uri_labels.json"
 
+    total_rows = sum(1 for _ in open(csv_file_path, 'r'))
+    logging.info(f"Processing {total_rows} rows in {csv_file_path}")
+    report_interval = max(1, total_rows // 10)  # Report every 10% of the rows
     with open(csv_file_path, 'r') as csvfile:
         reader = csv.DictReader(csvfile)
         rowIndex = 0
         # Create a unique URI for each row in the dataset
         # This is used to link the row to the dataset and other relevant information
         for row in reader:
+            # report the row index every report_interval rows
+            if rowIndex % report_interval == 0:
+                logging.info(f"Processing row {rowIndex} of {total_rows}")
             row_uuid = str(uuid.uuid4())
             row_uri = URN[row_uuid]
             graph.add((dataset_uri, EDAM.has_output, row_uri))
@@ -110,7 +116,7 @@ def process_regular_csv(csv_file_path, matched_genes, unmatched_genes, graph, gr
                     if monarch_uri:
                         full_monarch_uri = MONARCH[monarch_uri]
                         graph.add((row_uri, BIOLINK.Gene, full_monarch_uri))
-                        print(f"Added gene information for {value}: {full_monarch_uri}")
+                        logging.debug(f"Added gene information for {value}: {full_monarch_uri}")
                         gene_added = True
                         matched_genes += 1
                     else:
@@ -146,6 +152,7 @@ def process_regular_csv(csv_file_path, matched_genes, unmatched_genes, graph, gr
 #                        graph.add((row_uri, predicate, Literal(value)))
             rowIndex += 1
     # Save the row URI labels to a file for later reference
+    logging.info(f"Saving graph file ...")
     if graph_file:
         graph.serialize(destination=graph_file, format='nt', encoding= "utf-8" )
         filename_row_uri_labels_path = graph_file + '.row_uri_labels.json'
@@ -153,8 +160,8 @@ def process_regular_csv(csv_file_path, matched_genes, unmatched_genes, graph, gr
         with open(filename_row_uri_labels_path, 'w') as f:
             json.dump(row_uri_labels, f)
     else:
-        print(f"Warning: graph_folder not provided, row_uri_labels not saved to {filename_row_uri_labels_path}")
-    
+        logging.warning(f"Warning: graph_folder not provided, row_uri_labels not saved to {filename_row_uri_labels_path}")
+
     return matched_genes, unmatched_genes
 
 def test_unicode_bug_1():
@@ -177,6 +184,7 @@ if __name__ == '__main__':
     parser.add_argument('-f','--per_file', action='store_true', help="Create one graph per data file (default is one graph)")
     parser.add_argument('-p','--per_pmid', action='store_true', help="Create one graph per PMID (default is one graph). Overridden by per_file)")
     parser.add_argument('-m','--metadata', action='store_true', help="Process the article metadata file (default is to process all data files)")
+    parser.add_argument('-l','--log', default='create_rdf_triples.log', help='Log file name. This file is created in the top-level directory.')
 
     # argparse populates an object using parse_args
     # extract its members into a dict and from there into variables if used in more than one place
@@ -189,8 +197,12 @@ if __name__ == '__main__':
 
     main_dir = config['input_dir']
 
+
     if not os.path.isdir(main_dir):
         raise AKGException(f"create_rdf_triples: data directory {main_dir} must exist")
+
+    # set up logging
+    akg_logging_config( os.path.join(main_dir, config['log']))
     
     tracking_file = config['tracking_file']
     tracking_file = os.path.join(main_dir, tracking_file)
@@ -208,7 +220,7 @@ if __name__ == '__main__':
     file_to_uuid = 'filename_uuid_map.json'
     file_to_uuid_path = os.path.join(graph_folder, file_to_uuid)
     if not os.path.isfile(file_to_uuid_path):
-        print(f"Creating a new {file_to_uuid_path} file.")
+        logging.info(f"Creating a new {file_to_uuid_path} file.")
     # this is persistent storage for filename to UUID mapping
     g_filename_uuid_map = FilenameUUIDMap(file_to_uuid_path)
 
@@ -218,7 +230,7 @@ if __name__ == '__main__':
 
     article_file_path = os.path.join(main_dir, 'asd_article_metadata.csv')
     if not os.path.isfile(article_file_path):
-        print(f"Error: running create_rdf_triples.py but {article_file_path} does not exist: run processing.py first ")
+        logging.error(f"Error: running create_rdf_triples.py but {article_file_path} does not exist: run processing.py first ")
 
     # earlier versions used this file to manage exclusion, replaced by the tracking file but still currently needed for metadata
     adf = pd.read_csv(article_file_path, encoding='unicode_escape')
@@ -226,61 +238,77 @@ if __name__ == '__main__':
     # the exclusion is now in the tracking file
     tdf = load_tracking(tracking_file)
     
+    # create a local DataFrame to hold the tracking information for this run
+    local_tdf = create_empty_tracking_store()
+
     # used by the all-together approach
     global_graph = create_base_graph()
 
     if per_file:
-        print('per file graph output chosen')
+        logging.info('per file graph output chosen')
     elif per_pmid:
-        print('per pmid not yet implemented')
+        logging.info('per pmid not yet implemented')
     else:
         global_csv_count = 0
         global_matched_genes = 0
         global_unmatched_genes = 0
 
-        print(f"Processing file: {article_file_path}")
+        logging.info(f"Processing file: {article_file_path}")
         process_metadata_csv(article_file_path, global_graph)
 
     for index, row in tdf.iterrows():
         excl = row['excl']
         root = row['path']
         file = row['file']
+        step = row['step']
+        pmid = row['pmid']
+
         file_path = os.path.join(root, file)
+        # only process files that were not specifically excluded
         if excl:
-            print(f"Excluding file: {file_path} manual: {row['manual']} : {row['manualreason']}")
+            logging.info(f"Excluding file: {file_path} manual: {row['manual']} : {row['manualreason']}")
         else:
-            tdf.loc[index,'step'] = 3
-            print(f"Processing file: {file_path}")
-            if per_file:
-                graph = create_base_graph()
-                # add the metadata in to every graph, not big.
-                if metadata:
-                    print(f"Processing file: {article_file_path}")
-                    process_metadata_csv(article_file_path, graph)
+            # only process files that were created by step 3 (csv_data_cleaning)             
+            if step == 3:
+                logging.info(f"Processing file: {file_path}")
+                if per_file:
+                    graph = create_base_graph()
+                    # add the metadata in to every graph, not big, if requested
+                    if metadata:
+                        logging.info(f"Processing file: {article_file_path}")
+                        process_metadata_csv(article_file_path, graph)
+                    else:
+                        logging.info(f"Skipping metadata processing for file: {article_file_path}")
+
+                    mg_before = matched_genes
+                    ug_before = unmatched_genes
+                    graph_file_name = f"graph_{file}.nt"
+                    graph_file = os.path.join(root, graph_file_name)
+
+                    matched_genes, unmatched_genes = process_regular_csv(file_path, matched_genes, unmatched_genes, graph, graph_file)
+                    logging.info(f"Processing file: {file_path} complete")
+                    logging.info(f"Combined graph has been serialized to {graph_file}")
+                    tdf.loc[index,'graphfile'] = graph_file
+                    tdf.loc[index, 'unmatched'] = (unmatched_genes-ug_before)
+                    tdf.loc[index, 'matched']   = (matched_genes-mg_before)
+                    # write out the updated information (should have the new files we just wrote out)
+                    # do this inside the loop so that we can track the files as they are processed
+                    save_tracking(tdf, tracking_file)
+                    # Add the new file to the local tracking DataFrame
+                    new_entry = tracking_entry(4, root, pmid, graph_file_name, False, True, file_path, False, False,'', '', '', 0, 0)
+                    local_tdf = add_to_tracking(local_tdf, new_entry)
+
+                elif per_pmid:
+                    logging.info('per pmid not yet implemented')
                 else:
-                    print(f"Skipping metadata processing for file: {article_file_path}")
-
-                mg_before = matched_genes
-                ug_before = unmatched_genes
-                graph_file = os.path.join(graph_folder, f'graph_{file}.nt')
-
-                matched_genes, unmatched_genes = process_regular_csv(file_path, matched_genes, unmatched_genes, graph, graph_file)
-                print(f"Processing file: {file_path} complete")
-                print(f"Combined graph has been serialized to {graph_file}")
-                tdf.loc[index,'graphfile'] = graph_file
-                tdf.loc[index, 'unmatched'] = (unmatched_genes-ug_before)
-                tdf.loc[index, 'matched']   = (matched_genes-mg_before)
-                # write out the updated information (should have the new files we just wrote out)
-                save_tracking(tdf, tracking_file)
-
-            elif per_pmid:
-                print('per pmid not yet implemented')
-            else:
-                mg_before = matched_genes
-                ug_before = unmatched_genes
-                matched_genes, unmatched_genes = process_regular_csv(file_path, matched_genes, unmatched_genes, global_graph)
-                global_matched_genes += matched_genes - mg_before
-                global_unmatched_genes += unmatched_genes - ug_before
+                    mg_before = matched_genes
+                    ug_before = unmatched_genes
+                    matched_genes, unmatched_genes = process_regular_csv(file_path, matched_genes, unmatched_genes, global_graph)
+                    global_matched_genes += matched_genes - mg_before
+                    global_unmatched_genes += unmatched_genes - ug_before
+    
+    # add the new entries
+    tdf = add_to_tracking(tdf, local_tdf)
     
     # write out the updated information (should have the new files we just wrote out)
     save_tracking(tdf, tracking_file)
@@ -288,12 +316,12 @@ if __name__ == '__main__':
     if per_file:
         pass
     elif per_pmid:
-        print('per pmid not yet implemented')
+        logging.info('per pmid not yet implemented')
     else:
-        print(f"Processing file: {file_path} complete")
+        logging.info(f"Processing file: {file_path} complete")
         global_graph_file = os.path.join(graph_folder, 'main_graph.nt')
         global_graph.serialize(destination=global_graph_file, format='nt', encoding= "utf-8" )
-        print(f"Combined graph has been serialized to {global_graph_file}")
+        logging.info(f"Combined graph has been serialized to {global_graph_file}")
 
 
 # //////////////////////////

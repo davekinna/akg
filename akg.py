@@ -122,13 +122,22 @@ class FilenameUUIDMap:
 class GeneIdStore:
     """
     Store of gene IDs in multiple formats. For searching.
+    Work in progress. This originally used the file lookup method, based on TH's implementation. 
+    Extending her file didn't seem to make much improvement, so I downloaded the entire HGNC JSON dataset 
+    and implemented a separate lookup based on that. Both methods currently running in series, but still many ensembl IDs are not found
+    For those that I've traced further through the ensembl website, they are typically flagged as deprecated. For example, 
+    "Ensembl gene ENSG00000183941 is no longer in the database but it has been mapped to 1 deprecated identifier."
+    One optimisation of the graph might be simply to apply strict criteria for inclusion - i.e., must have a valid HGNC ID. This might make it 
+    more sparse. At the moment the graph includes these with their ensembl IDs.
     """
-    def __init__(self, source:str="gene_ids.txt"):
+    def __init__(self, source:str="gene_ids.txt", hgnc_file:str="hgnc_complete_set.json"):
         # create a dict for lookup of ensemble IDs, mapping back to HGNC IDs.
         # create a separate one for other types
         # this is an optimisation
         self._ens:dict[str,str] = {}
         self._oth:dict[str,str] = {}
+
+        self._setup_hgnc_mapping(hgnc_file)
 
         # Assume the file is in the same location as this file (akg.py)
         script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -154,9 +163,9 @@ class GeneIdStore:
                         else:
                             if id not in self._oth:
                                 self._oth[id] = hgnc_ID
-        print(f'ensemble_id to hgnc dict has {len(self._ens)} entries')
-        print(f'other_id to hgnc dict has {len(self._oth)} entries')
-        sys.stdout.flush()
+        logging.info(f'ensemble_id to hgnc dict has {len(self._ens)} entries')
+        logging.info(f'symbol to hgnc dict has {len(self._symbol_to_hgnc)} entries')
+        logging.info(f'other_id to hgnc dict has {len(self._oth)} entries')
 
     def get_gene_id(self, gene_name:str):
         # Remove 'hp_' and variant info to help matching process
@@ -169,6 +178,12 @@ class GeneIdStore:
 
         u_gene_name = gene_name.upper()
         if u_gene_name.startswith('ENS'):
+            if self._ETH:
+                # in theory this should be fastest
+                hgnc_lookup = self._ensembl_to_hgnc.get(u_gene_name, None)
+                if hgnc_lookup is not None:
+                    return hgnc_lookup
+
             direct_lookup = self._ens.get(u_gene_name, None)
             if direct_lookup is not None:
                 return direct_lookup
@@ -178,25 +193,68 @@ class GeneIdStore:
             if direct_lookup is not None:
                 print(f"HGNC ID found for ensemble ID {u_gene_name}, version omitted")
                 return direct_lookup
+        # if we get here, it is not an ensemble ID, so try the other one
+        hgnc_direct_lookup = self._symbol_to_hgnc.get(u_gene_name, None)
+        if hgnc_direct_lookup is not None:
+            return hgnc_direct_lookup
 
         direct_lookup = self._oth.get(u_gene_name, None)
         if direct_lookup is not None:
-            print(f"HGNC ID found for other ID {u_gene_name}")
+            logging.debug(f"HGNC ID found for other ID {u_gene_name}")
             return direct_lookup
 
         for line in self._lines:
             if u_gene_name in line: # .upper():
-                print(f"{gene_name} HGNC ID found by brute-force search")
-                sys.stdout.flush()
+                logging.debug(f"{gene_name} HGNC ID found by brute-force search")
                 return line.split('\t')[0]
             if u_gene_name.split('.')[0] in line: # .upper():
-                print(f"{gene_name} HGNC ID found by brute-force search, first component only")
-                sys.stdout.flush()
+                logging.debug(f"{gene_name} HGNC ID found by brute-force search, first component only")
                 return line.split('\t')[0]
         # for optimisation, really useful to know what is not found
-        print(f"HGNC ID not found for {gene_name}")
-        sys.stdout.flush()
+        logging.debug(f"HGNC ID not found for {gene_name}")
         return ''
+    
+    def _setup_hgnc_mapping(self, hgnc_file:str):
+        """
+        set up a lookup table based on the complete data provided by HGNC
+        """
+        self._ensembl_to_hgnc = {}
+        self._symbol_to_hgnc = {}
+        # simple flag to check this is useable
+        self._ETH = False
+
+        try:
+            with open(hgnc_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            # Get the list of gene documents
+            gene_docs = data.get('response', {}).get('docs', [])
+
+            if not gene_docs:
+                logging.warning("No gene documents found in the JSON file.")
+                return {}
+
+            # Iterate over each gene in the dataset
+            for gene in gene_docs:
+                # Check if the gene has an Ensembl ID
+                if 'ensembl_gene_id' in gene:
+                    ensembl_id = gene['ensembl_gene_id']
+                    hgnc_id = gene.get('hgnc_id')
+                    hgnc_symbol = gene.get('symbol')
+
+                    if ensembl_id:
+                        if hgnc_id:
+                            self._ensembl_to_hgnc[ensembl_id] = hgnc_id
+                            if hgnc_symbol:
+                                self._symbol_to_hgnc[hgnc_symbol] = hgnc_id
+
+        except FileNotFoundError:
+            logging.error(f"Error: The file '{hgnc_file}' was not found.")
+            return
+        # If we get here, the mapping is set up
+        self._ETH = True
+
+        logging.info(f"HGNC mapping set up with {len(self._ensembl_to_hgnc)} entries")
 
 # define the namespaces used in the RDF data
 BIOLINK = Namespace("https://w3id.org/biolink/vocab/")
