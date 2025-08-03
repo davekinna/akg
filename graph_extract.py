@@ -2,20 +2,9 @@ import json
 import os
 import argparse
 from rdflib import Graph, Namespace, URIRef, Literal, query
-from akg import AKGException, FilenameUUIDMap
+from akg import AKGException, FilenameUUIDMap, load_graph
 # from akg import BIOLINK, ENSEMBL, NCBIGENE, RDFS, RDF, SCHEMA, EDAM, DOI, DCT, PMC, OWL, MONARCH, URN
 
-def load_graph(filename: str) -> Graph:
-    """
-    Load a knowledge graph from an nt format file
-    :param filename: Path to the RDF graph file in NT format
-    :return: An rdflib Graph object containing the loaded RDF data
-    """
-    # Create a new RDF graph
-    g = Graph()
-    with open(filename, "rb") as f:
-        g.parse(f, format="nt")
-    return g
 
 def main():
     """

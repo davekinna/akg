@@ -39,6 +39,8 @@ if __name__ == '__main__':
     parser.add_argument('-i','--input_dir', default='data', help='Destination top-level directory for data files.(input and output)')
     parser.add_argument('-g','--graph_dir', default='graph', help='Subdirectory for graph files')
     parser.add_argument('-n','--input', default='main_graph.nt', help='Input file')
+
+    
     parser.add_argument('-u','--output', default='cleaned_main_graph.nt', help='Output file')
     parser.add_argument('-t','--tracking_file', default='akg_tracking.xlsx', help='Tracking file name. This file resides in the top-level directory.')
 

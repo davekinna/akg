@@ -4,7 +4,7 @@ import time
 import sys
 import os
 import uuid
-from rdflib import Namespace
+from rdflib import Graph, Namespace
 import logging
 
 # Set up logging
@@ -271,6 +271,18 @@ PMC = Namespace("https://pubmed.ncbi.nlm.nih.gov/")
 OWL = Namespace("http://www.w3.org/2002/07/owl#")
 MONARCH = Namespace("https://monarchinitiative.org/")
 URN = Namespace("urn:uuid:")
+
+def load_graph(filename: str) -> Graph:
+    """
+    Load a knowledge graph from an nt format file
+    :param filename: Path to the RDF graph file in NT format
+    :return: An rdflib Graph object containing the loaded RDF data
+    """
+    # Create a new RDF graph
+    g = Graph()
+    with open(filename, "rb") as f:
+        g.parse(f, format="nt")
+    return g
 
 
 # run the tests on the command line with 
