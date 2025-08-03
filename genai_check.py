@@ -37,6 +37,8 @@ def genai_check(filename:str)->Tuple[bool,str]:
         bool: True if the file is of the required type, False otherwise.
         str: Explanation of the result.
     """
+    # This is an arbitrary chunk at the start of the file being checked, to 
+    # avoid unnecessarily reading too much. We're only checking the format.
     max_chars = 500
     # Read the content of the file
     try:
@@ -50,17 +52,22 @@ def genai_check(filename:str)->Tuple[bool,str]:
     # Select the Gemini model. 
     # Gemini itself advises me that to minimize non-deterministic behavior, set temperature to 0.0
     # (with some provisos - there is some inherent randomness in the model and the remote compute platform, and even 
-    # a specific labelled model may be updated)
+    # a specific labelled model may be subject to minor updates)
     generation_config = genai.GenerationConfig(
         temperature=0.0
     )
 
     # Pass the config when creating the model instance
+    # The model we're using here is that given by Gemini's template code (gemini-1.5-flash)
+    # "Our fastest multimodal model with great performance for diverse, repetitive tasks and a 1 million token context window."
+    # However things are moving fast and it's flagged as a legacy model scheduled for retirement on 25/9/2025
+    # TODO: retry using gemini-2.0-flash as prompted in 
+    # https://cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions
+    #
     model = genai.GenerativeModel(
         'gemini-1.5-flash',
         generation_config=generation_config
     )
-    csv_data = file_content.strip()
     # Create the prompt, providing both the instructions and the file content
     prompt_template = """
     Analyze the following CSV content. Respond in a valid JSON format with two keys:
@@ -104,7 +111,7 @@ def genai_check(filename:str)->Tuple[bool,str]:
         print(f"Error parsing the model's response: {e}")
         print(f"Raw response: {response.text}")
 
-    return False, "File type not supported"
+    return False, "File format not supported"
 
 if __name__ == "__main__":
 
