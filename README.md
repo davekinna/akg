@@ -33,7 +33,7 @@ Beneath each of those is a directory 'supp_data' holding the downloaded data fil
 
 Excluding downloaded data at this point based on PMID can be achieved by deleting it or moving it to a different location. The subsequent steps only work on files under the given top level directory.
 
-3. checking each supplementary data file for relevant expression info and generating derived data set files, one for each table of data
+3. checking each supplementary data file for relevant expression info and generating derived data set files, one for each table of data 
     - data_convert.py
 
 Use this as follows:
@@ -42,8 +42,8 @@ python data_convert.py -i <top_level_directory>
 ```
 The derived dataset files are named expdata_<filename>.csv, where <filename> is the data file that it came from. These are in the same directory as the datafile itself.
 
-4. Inspection and manual exclusion of data.
-data_convert.py this will create an excel spreadsheet 'tracking' file (by default named 'akg_tracking.xlsx'), with one line per downloaded supplementary data file, and then one line per derived dataset file.
+4. Inspection and manual exclusion of data. 
+data_convert.py will create an excel spreadsheet 'tracking' file (by default named 'akg_tracking.xlsx'), with one line per downloaded supplementary data file, and then one line per derived dataset file.
 The derived dataset file lines include the name of the data file they were generated from.
 
 Inspect the tracking file for dataset lines where the 'log fold change' column has been incorrectly identified and exclude them from subsequent processing. You can do this by setting the 'excl' column to TRUE (save and close the spreadsheet before moving to the next step).  In this case, for reporting and tracking integrity it is also useful to set the 'manual' column to TRUE and put some explanatory text in the 'manualreason' column of the spreadsheet which is there for this purpose.
