@@ -17,6 +17,8 @@ to identify these.
 
 Steps in creating and using a graph are as follows:
 
+0. Create a working directory for your downloaded data, derived data and graph files. In the examples I've named my working directories with the date, for example, 'd2025-08-12'.
+
 1. finding relevant articles
     - processing.py
 
