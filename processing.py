@@ -312,6 +312,8 @@ def main():
     """
     Top-level function for AKG 'process'
     """
+    command_line_str = ' '.join(sys.argv)
+
     # TODO: #8 connect search term and return count command line arguments to actions
     DEFAULT_SEARCH_TERM  = '((autism[title] or ASD[title]) AND brain AND transcriptomic AND expression AND rna NOT review[title] NOT Review[Publication Type])'
     DEFAULT_RETURN_COUNT = 30

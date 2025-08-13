@@ -33,16 +33,20 @@ def process_nt_file(input_file:str, output_file:str):
 
 
 if __name__ == '__main__':
+    """
+    Main entry point for graph_cleanup.
+    No tracking file, this is to clean up existing graphs, this should really be implemented at the time of graph creation.
+    The standard logging is not used here.
+    TODO: #31 change create_rdf_triples to implement the formatting given in graph_cleanup.py
+
+    """
 
     parser = argparse.ArgumentParser(description='Cleanup knowledge graph .nt files and apply conventions')
 
     parser.add_argument('-i','--input_dir', default='data', help='Destination top-level directory for data files.(input and output)')
     parser.add_argument('-g','--graph_dir', default='graph', help='Subdirectory for graph files')
     parser.add_argument('-n','--input', default='main_graph.nt', help='Input file')
-
-    
     parser.add_argument('-u','--output', default='cleaned_main_graph.nt', help='Output file')
-    parser.add_argument('-t','--tracking_file', default='akg_tracking.xlsx', help='Tracking file name. This file resides in the top-level directory.')
 
     # argparse populates an object using parse_args
     # extract its members into a dict and from there into variables if used in more than one place
@@ -55,10 +59,6 @@ if __name__ == '__main__':
     input_file = config['input']
     output_file = config['output']
     graph_dir = config['graph_dir']
-
-    tracking_file = config['tracking_file']
-    print(f'Processing directory {os.path.realpath(main_dir)}: using tracking file {tracking_file} here')
-    tracking_file = os.path.join(main_dir, tracking_file)
 
     full_graph_path = os.path.join(main_dir,graph_dir,input_file)
     full_graph_output = os.path.join(main_dir,graph_dir,output_file)

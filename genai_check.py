@@ -8,7 +8,9 @@ import json
 import argparse
 from akg import AKGException, akg_logging_config
 import logging
-from tracking import load_tracking
+from tracking import load_tracking, save_tracking
+import sys 
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -115,12 +117,14 @@ def genai_check(filename:str)->Tuple[bool,str]:
 
 if __name__ == "__main__":
 
+    command_line_str = ' '.join(sys.argv)
+
     # manage the command line options
     parser = argparse.ArgumentParser(description='Check the format of chosen files using Google Gemini AI model.')
     parser.add_argument('-i', '--input_dir', default='data', help='Destination top-level directory for input data files (output files also written here)')
     parser.add_argument('-t', '--tracking_file', default='akg_tracking.xlsx', help='Tracking file name. This file is created in the top-level directory.')
     parser.add_argument('-l', '--log', default='genai_check.log', help='Log file name. This file is created in the top-level directory.')
-    parser.add_argument('-e', '--exclude', default='exclude.txt', help='Set the tracking file exclude value to True for the files that are not suitable')
+    parser.add_argument('-e', '--exclude', action='store_true', help='Set the tracking file exclude value to True for the files that are not suitable')
     parser.add_argument('-c', '--check-one-file', default=None, help='Check this one file only, in the input directory')
 
     # argparse populates an object using parse_args
@@ -145,12 +149,9 @@ if __name__ == "__main__":
             raise AKGException(f"data_convert: data directory {main_dir} must exist") 
 
         akg_logging_config(os.path.join(main_dir, config['log']))
-        logging.info(f'Starting genai_check')
+        logging.info(f"Program executed with command: {command_line_str}")
 
         logging.info(f'Top-level data directory {os.path.realpath(main_dir)}')
-
-        log_file = config['log']
-        log_file = os.path.join(main_dir, log_file)
 
         # create the tracking file    
         tracking_file = config['tracking_file']
@@ -165,19 +166,25 @@ if __name__ == "__main__":
         for index, row in df.iterrows():
             root = row['path']
             file = row['file']
-            step = row['step']
-            excl = row['excl']
-            if step == 3 and not excl:  
+            # only operate on those files created by data_convert
+            # ignore excluded flag at present, to make a comparison
+            if row['step'] == 1:
+                if row['excl']:
+                    logging.info(f"File: {file_path} flagged as excluded")
                 file_path = os.path.join(root, file)
                 logging.info(f"Processing file: {file_path}")
-                # now exclude the source data
                 is_valid, explanation = genai_check(file_path)
                 if is_valid:
                     logging.info(f"File '{file_path}' is of the required type.")
                 else:
                     logging.info(f"File '{file_path}' is not of the required type.")
                 logging.info(f"Explanation: {explanation}")
-                # insert a delay of 10s to enable the code to run on the free tariff
+                df.loc[int(index),'suitable'] = is_valid
+                df.loc[int(index),'suitablereason'] = explanation
+                if not is_valid and record_exclusions:
+                    df.loc[int(index),'excl'] = True
+                    logging.info(f"Excluding file: {file_path}")
+                # insert a delay of 10s to avoid hammering the API and hitting rate limits
                 sleep(10)
 
-                # df.loc[int(index),'excl'] = True
+        save_tracking(df, tracking_file)

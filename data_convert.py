@@ -1,5 +1,6 @@
 """takes excel, csv, tsv or txt files retrieved from pubmed, checks if they contain a column re. log fold changes, and saves sheet as csv file"""
 
+from fileinput import filename
 import logging
 import pandas as pd
 import os
@@ -10,6 +11,7 @@ import re
 import argparse
 from akg import AKGException, akg_logging_config
 from tracking import create_tracking, load_tracking, save_tracking, create_empty_tracking_store, add_to_tracking, tracking_entry
+import sys
 
 def process_excel_file(file_path)->pd.DataFrame:
     """loads excel files into dataframes
@@ -168,7 +170,9 @@ def process_dataframe(df, sheet_name, output_dir, file_path, input_delimiter='\t
 
         # assume the pmid is the last component of the output dir
         pmid = os.path.basename(output_dir)
-        tdf = add_to_tracking(tdf, tracking_entry(1,output_dir, pmid, new_filename, False, True, file_path, False, False, '', log_fold_col, '', 0, 0))
+        # create a new tracking entry
+        new_entry = tracking_entry(1,output_dir,pmid,new_filename,False,True,file_path,False,False,'',log_fold_col,'', 0, 0,False,'')
+        tdf = add_to_tracking(tdf, new_entry)
     else:
         logging.info(f"Skipped {sheet_name} in {file_path}: No 'log fold change' column found")
 
@@ -200,49 +204,34 @@ def process_supp_data_folder(data_folder:str, tracking_file_path:str ):
     local_tdf = create_empty_tracking_store()
 # TODO: remove loop iteration, do sthg more pythonic
     for index, row in df.iterrows():
-        root = row['path']
-        file = row['file']
-        file_path = os.path.join(root, file)
-        # never process files that we wrote out on a previous iteration
-        if file.lower().startswith('expdata_'):
-            logging.info(f"Skipping file: {file_path}")
-            continue
-        logging.info(f"Processing file: {file_path}")
-        if file.lower().endswith('.xlsx'):
-            local_tdf = process_excel_file(file_path)
-        elif file.lower().endswith('.xls'):
-            local_tdf = process_old_file(file_path)
-        elif file.lower().endswith(('.csv', '.tsv', '.txt')):
-            local_tdf = process_csv_file(file_path)
-        tdf = add_to_tracking(tdf,local_tdf)
-        # now exclude the source data
-        df.loc[int(index),'excl'] = True
-        df.loc[int(index),'step'] = 1
-
+        # data_convert only works on step 0 files, the raw data that was downloaded
+        if row['step'] == 0 and not row['excl']:
+            root = row['path']
+            file = row['file']
+            file_path = os.path.join(root, file)
+            # never process files that we wrote out on a previous iteration
+            if file.lower().startswith('expdata_'):
+                logging.info(f"Skipping file: {file_path}")
+                continue
+            logging.info(f"Processing file: {file_path}")
+            if file.lower().endswith('.xlsx'):
+                local_tdf = process_excel_file(file_path)
+            elif file.lower().endswith('.xls'):
+                local_tdf = process_old_file(file_path)
+            elif file.lower().endswith(('.csv', '.tsv', '.txt')):
+                local_tdf = process_csv_file(file_path)
+            tdf = add_to_tracking(tdf,local_tdf)
+            # flag the source data as excluded, just for completeness.
+            # see the check above. This means that if you rerun data_convert, the same file will not be processed twice unless you
+            # change the 'excl' flag back to False.
+            df.loc[int(index),'excl'] = True
+    logging.info(f'Finished processing files in {data_folder}, found {len(tdf)} new files to add to tracking')
 
     # now the loop has finished add the accumulated tracking info into the main one
     df = add_to_tracking(df, tdf)
 
     # write out the updated information (should have the new files we just wrote out)
     save_tracking(df, tracking_file_path)
-
-    # pmids = df['pmid'].tolist().uniq()
-
-    # for pmid in pmids:
-    #     pmid_folder = os.path.join(data_folder, str(pmid))
-    #     for root, dirs, files in os.walk(pmid_folder):
-    #         for file in files:
-    #             # skip files that we wrote out on a previous iteration
-    #             if file.lower().startswith('expdata_'):
-    #                 continue
-    #             file_path = os.path.join(root, file)
-    #             print(f"Processing file: {file_path}")
-    #             if file.lower().endswith('.xlsx'):
-    #                 process_excel_file(file_path)
-    #             elif file.lower().endswith('.xls'):
-    #                 process_old_file(file_path)
-    #             elif file.lower().endswith(('.csv', '.tsv', '.txt')):
-    #                 process_csv_file(file_path)
 
 def save_filenames(data_folder:str, article_file_path:str, save_out_file:str='supp_files.txt'):
     """
@@ -286,6 +275,8 @@ def save_filenames(data_folder:str, article_file_path:str, save_out_file:str='su
 
 if __name__ == '__main__':
 
+    command_line_str = ' '.join(sys.argv)
+
     # manage the command line options
     parser = argparse.ArgumentParser(description='Convert downloaded supplementary data to graph precursor')
     parser.add_argument('-i','--input_dir', default='data', help='Destination top-level directory for input data files (output files also written here)')
@@ -303,6 +294,7 @@ if __name__ == '__main__':
 
     akg_logging_config(os.path.join(main_dir, config['log']))
     logging.info(f'Starting data_convert in {main_dir}')
+    logging.info(f"Program executed with command: {command_line_str}")
 
     # create the tracking file    
     tracking_file = config['tracking_file']

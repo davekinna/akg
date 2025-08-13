@@ -176,6 +176,7 @@ def test_unicode_bug_1():
 
 
 if __name__ == '__main__':
+    command_line_str = ' '.join(sys.argv)
 
     # manage the command line options
     parser = argparse.ArgumentParser(description='Convert downloaded supplementary data to graph precursor')
@@ -203,6 +204,7 @@ if __name__ == '__main__':
 
     # set up logging
     akg_logging_config( os.path.join(main_dir, config['log']))
+    logging.info(f"Program executed with command: {command_line_str}")
     
     tracking_file = config['tracking_file']
     tracking_file = os.path.join(main_dir, tracking_file)
