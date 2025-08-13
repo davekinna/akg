@@ -17,7 +17,7 @@ to identify these.
 
 Steps in creating and using a graph are as follows:
 
-0. Create a working directory for your downloaded data, derived data and graph files. In the examples I've named my working directories with the date, for example, 'd2025-08-12'.
+0. Create a working directory for your downloaded data, derived data and graph files. In the examples I've named my working directories with the date, for example, 'd2025-08-12'. I refer to this here as <top_level>
 
 1. finding relevant articles
     - processing.py
@@ -27,11 +27,11 @@ Steps in creating and using a graph are as follows:
 
 Use this as follows:
 ```
-python processing.py -o <top_level_directory>
+python processing.py -o <top_level>
 ```
 
-The data files are output to directories under top_level_directory. These are organised by PMID - i.e., the next level of directories is named by the numeric pubmed ID value. 
-Beneath each of those is a directory 'supp_data' holding the downloaded data files.
+The data files are output to directories under <top_level>. The data files are output to <top_level>/supp_data.  The next level of directories under supp_data is named by the numeric pubmed ID value. 
+So, the files are/should be downloaded to <top_level>/supp_data/<PMID>.
 
 Excluding downloaded data at this point based on PMID can be achieved by deleting it or moving it to a different location. The subsequent steps only work on files under the given top level directory.
 
@@ -40,7 +40,7 @@ Excluding downloaded data at this point based on PMID can be achieved by deletin
 
 Use this as follows:
 ```
-python data_convert.py -i <top_level_directory>
+python data_convert.py -i <top_level>
 ```
 The derived dataset files are named expdata_<filename>.csv, where <filename> is the data file that it came from. These are in the same directory as the datafile itself.
 
