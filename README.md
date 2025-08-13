@@ -17,6 +17,8 @@ to identify these.
 
 Steps in creating and using a graph are as follows:
 
+0. Create a working directory for your downloaded data, derived data and graph files. In the examples I've named my working directories with the date, for example, 'd2025-08-12'. I refer to this here as <top_level>
+
 1. finding relevant articles
     - processing.py
 
@@ -25,25 +27,25 @@ Steps in creating and using a graph are as follows:
 
 Use this as follows:
 ```
-python processing.py -o <top_level_directory>
+python processing.py -o <top_level>
 ```
 
-The data files are output to directories under top_level_directory. These are organised by PMID - i.e., the next level of directories is named by the numeric pubmed ID value. 
-Beneath each of those is a directory 'supp_data' holding the downloaded data files.
+The data files are output to directories under <top_level>. The data files are output to <top_level>/supp_data.  The next level of directories under supp_data is named by the numeric pubmed ID value. 
+So, the files are/should be downloaded to <top_level>/supp_data/<PMID>.
 
 Excluding downloaded data at this point based on PMID can be achieved by deleting it or moving it to a different location. The subsequent steps only work on files under the given top level directory.
 
-3. checking each supplementary data file for relevant expression info and generating derived data set files, one for each table of data
+3. checking each supplementary data file for relevant expression info and generating derived data set files, one for each table of data 
     - data_convert.py
 
 Use this as follows:
 ```
-python data_convert.py -i <top_level_directory>
+python data_convert.py -i <top_level>
 ```
 The derived dataset files are named expdata_<filename>.csv, where <filename> is the data file that it came from. These are in the same directory as the datafile itself.
 
-4. Inspection and manual exclusion of data.
-data_convert.py this will create an excel spreadsheet 'tracking' file (by default named 'akg_tracking.xlsx'), with one line per downloaded supplementary data file, and then one line per derived dataset file.
+4. Inspection and manual exclusion of data. 
+data_convert.py will create an excel spreadsheet 'tracking' file (by default named 'akg_tracking.xlsx'), with one line per downloaded supplementary data file, and then one line per derived dataset file.
 The derived dataset file lines include the name of the data file they were generated from.
 
 Inspect the tracking file for dataset lines where the 'log fold change' column has been incorrectly identified and exclude them from subsequent processing. You can do this by setting the 'excl' column to TRUE (save and close the spreadsheet before moving to the next step).  In this case, for reporting and tracking integrity it is also useful to set the 'manual' column to TRUE and put some explanatory text in the 'manualreason' column of the spreadsheet which is there for this purpose.
