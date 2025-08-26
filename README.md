@@ -30,7 +30,7 @@ Use this as follows:
 python akg\processing.py -o <top_level>
 ```
 
-The data files are output to directories under <top_level>. The data files are output to <top_level>/supp_data.  The next level of directories under supp_data is named by the numeric pubmed ID value. 
+The data files are output to <top_level>/supp_data.  The next level of directories under supp_data is named by the numeric pubmed ID value. 
 So, the files are/should be downloaded to <top_level>/supp_data/<PMID>.
 
 Excluding downloaded data at this point based on PMID can be achieved by deleting it or moving it to a different location. The subsequent steps only work on files under the given top level directory.
