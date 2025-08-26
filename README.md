@@ -6,6 +6,18 @@ The Birkbeck ASD Knowledge Graph
 ## Aims
 * Build on the work of https://github.com/tamjhill/ASDProject
 
+## Installation
+A fully automated installation is not yet in place (see https://github.com/davekinna/akg/issues/34). To check out the code with command line git:
+```
+git clone https://github.com/davekinna/akg.git
+```
+This will create a subdirectory 'akg' with the python scripts in. The most recent code version is on the dev branch - so to see this in your environment:
+```
+cd akg
+git checkout dev
+```
+... and then return to the parent directory (cd ..), the examples below do this to avoid mixing code and data. With the current immature version of the code, you may need to install modules to run the code.
+
 ## Workflow for using the code
 This section is an outline of the project and available code.  I assume here you are running from the directory level above the source code (which is in directory akg).
 
@@ -34,6 +46,16 @@ The data files are output to <top_level>/supp_data.  The next level of directori
 So, the files are/should be downloaded to <top_level>/supp_data/<PMID>.
 
 Excluding downloaded data at this point based on PMID can be achieved by deleting it or moving it to a different location. The subsequent steps only work on files under the given top level directory.
+
+3. Split the supplementary data files if necessary and generate derived data set files, one CSV file for each table of data. These are called split_*.csv.
+    - data_split.py
+
+Use this as follows:
+```
+python akg\data_split.py -i <top_level>
+```
+This will have created a file in the data directories, alongside the source data that was downloaded, called split_*tablename*.csv.
+These are now the working data files. data_split.py also will have created a tracking file called (by default) akg_tracking.xlsx, and a log file called data_split.log.
 
 3. checking each supplementary data file for relevant expression info and generating derived data set files, one for each table of data 
     - data_convert.py
