@@ -8,7 +8,7 @@ from rdflib.namespace import XSD
 import uuid
 import json
 import pandas as pd
-from akg import GeneIdStore, AKGException, FilenameUUIDMap, akg_logging_config
+from akg import GeneIdStore, AKGException, FilenameUUIDMap, akg_logging_config, possible_log_names, possible_gene_names, possible_pval_names
 import argparse
 from tracking import create_tracking, load_tracking, save_tracking, create_empty_tracking_store, add_to_tracking, tracking_entry
 import logging
@@ -76,10 +76,10 @@ def process_regular_csv(csv_file_path, matched_genes, unmatched_genes, graph, gr
     #todo: #29 understand why this is needed, but it is in the original code
     graph.add((pmid_uri, RDF.type, DCT.identifier))
     
-    #lists of data column headers to match, with most preferred match given first.
-    possible_gene_names = ['ensembl', 'geneid', 'symbol', 'genesymbol', 'genename', 'entrez', 'ncbi', 'gene', 'tf', 'rna', 'feature']
-    possible_log_names = ['log2', 'lf2', 'lfc2', 'logfold2', 'log2fc', 'logfoldchange', 'logfold', 'lf', 'logfc', 'foldchange', 'fc', 'lfc', 'fold', 'expression', 'enrichment', 'estimate']
-    possible_pval_names = ['padj', 'adjp', 'pvalueadj', 'adjpvalue', 'pvaladj', 'adjpval', 'pvadj', 'adjpv', 'fdr', 'fdrpval', 'qvalue', 'pvalue', 'qval', 'pval', 'pv', 'qv']
+    # the following are now imported from the akg package
+    # possible_gene_names = ['ensembl', 'geneid', 'symbol', 'genesymbol', 'genename', 'entrez', 'ncbi', 'gene', 'tf', 'rna', 'feature']
+    # possible_log_names = ['log2', 'lf2', 'lfc2', 'logfold2', 'log2fc', 'logfoldchange', 'logfold', 'lf', 'logfc', 'foldchange', 'fc', 'lfc', 'fold', 'expression', 'enrichment', 'estimate']
+    # possible_pval_names = ['padj', 'adjp', 'pvalueadj', 'adjpvalue', 'pvaladj', 'adjpval', 'pvadj', 'adjpv', 'fdr', 'fdrpval', 'qvalue', 'pvalue', 'qval', 'pval', 'pv', 'qv']
     
     # cached gene_id.txt data for faster lookup
     mygids = GeneIdStore()

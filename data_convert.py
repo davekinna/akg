@@ -9,7 +9,7 @@ import xlrd
 import csv
 import re
 import argparse
-from akg import AKGException, akg_logging_config
+from akg import AKGException, akg_logging_config, possible_log_names
 from tracking import create_tracking, load_tracking, save_tracking, create_empty_tracking_store, add_to_tracking, tracking_entry
 import sys
 
@@ -66,16 +66,12 @@ def test_lfc_search():
     """
     col = "Relevance of circQTLs to ASD"
     log_fold_col = ''
-    if any(phrase in re.sub(r'[_\s-]', '', col.lower()) for phrase in ['logfoldchange', 'logfold', 'logfold2', 'lf', 
-                                                                        'expression', 'enrichment', 'logfc', 'foldchange', 'fc', 
-                                                                        'log2', 'lf2', 'lfc', 'log2fc', 'log', 'fold']):
+    if any(phrase in re.sub(r'[_\s-]', '', col.lower()) for phrase in possible_log_names):
         log_fold_col = col
 
     sqcol = re.sub(r'[_\s-]', '', col.lower())
     print(sqcol)
-    for phrase in ['logfoldchange', 'logfold', 'logfold2', 'lf', 
-                   'expression', 'enrichment', 'logfc', 'foldchange', 'fc', 
-                   'log2', 'lf2', 'lfc', 'log2fc', 'log', 'fold']:
+    for phrase in possible_log_names:
         print(f'{phrase}:{sqcol.find(phrase)}\n')
     assert log_fold_col
     print(f'log_fold_col:{log_fold_col}')
@@ -91,9 +87,7 @@ def process_dataframe(df:pd.DataFrame, sheet_name:str, output_dir:str, file_path
     df.columns = df.columns.astype(str)
     log_fold_col = None
     for col in df.columns:
-        if any(phrase in re.sub(r'[_\s-]', '', col.lower()) for phrase in ['logfoldchange', 'logfold', 'logfold2', 'lf', 
-                                                                           'expression', 'enrichment', 'logfc', 'foldchange', 'fc', 
-                                                                           'log2', 'lf2', 'lfc', 'log2fc', 'log', 'fold']):
+        if any(phrase in re.sub(r'[_\s-]', '', col.lower()) for phrase in possible_log_names):
             log_fold_col = col
             break
     # save the file as .csv but ONLY if a log fold column is found or nominated through the input 
