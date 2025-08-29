@@ -297,7 +297,11 @@ if __name__ == '__main__':
                     # do this inside the loop so that we can track the files as they are processed
                     save_tracking(tdf, tracking_file)
                     # Add the new file to the local tracking DataFrame
-                    new_entry = tracking_entry(4, root, pmid, graph_file_name, False, True, file_path, False, False,'', '', '', 0, 0)
+                #     def tracking_entry(step:int, path:str, pmid:str, filename:str, excl:bool, derived:bool, source:str, cleaned:bool, manual:bool, manualreason:str, 
+                #    skip:int, pval:str, gene:str, lfc:str, graphfile:str, matched:int, unmatched:int, suitable:bool, suitablereason:str)->pd.DataFrame:
+
+                    new_entry = tracking_entry(4, root, pmid, graph_file_name, False, True, file_path, False, False, '', 0, '', '', '', graph_file_name, 0, 0, False, '')
+
                     local_tdf = add_to_tracking(local_tdf, new_entry)
 
                 elif per_pmid:

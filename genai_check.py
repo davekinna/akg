@@ -72,17 +72,22 @@ def genai_check(filename:str)->Tuple[bool,str]:
     )
     # Create the prompt, providing both the instructions and the file content
     prompt_template = """
-    Analyze the following CSV content. Respond in a valid JSON format with two keys:
+    Analyze the following CSV content. Respond in a valid JSON format with six keys, each with a single value. Do not return any array-like data.:
     1. "answer": a boolean value (true or false).
     2. "reason": a string explaining your reasoning.
-
-    Does this file contain autism or ASD gene expression data with each row holding (among other things) a gene name, a pvalue, and a log fold change? 
-    These don't have to be the only columns present, but they must be included. They can come in any order, and the file can have a header row.
-
+    3. "skip": an integer indicating the number of rows to skip to reach the row with the column headers in
+    4. "lfc": the name of the column containing log fold changes.
+    5. "pval": the name of the column containing p-values.
+    6. "gene": the name of the column containing gene names.
+    
+    Does this file contain autism or ASD gene expression data with each row holding a gene name, a pvalue, and a log fold change? 
+    These don't have to be the only columns present, but they must be included. They can come in any order, and the file will have a header row.
+    
     --- CSV CONTENT START ---
     {csv_data}
     --- CSV CONTENT END ---
     """
+
     prompt = textwrap.dedent(prompt_template)
 
     # Send the prompt to the model
@@ -106,8 +111,12 @@ def genai_check(filename:str)->Tuple[bool,str]:
         # Now you can access the structured data
         is_suitable = parsed_response['answer']      # This will be True or False
         explanation = parsed_response['reason']      # This is the explanation string
+        skip_rows = parsed_response['skip']          # This is the number of rows to skip
+        lfc = parsed_response['lfc']                  # This is the log fold change column
+        pval = parsed_response['pval']                # This is the p-value column
+        gene = parsed_response['gene']                # This is the gene name column
 
-        return is_suitable, explanation
+        return is_suitable, explanation, skip_rows, lfc, pval, gene
 
     except (json.JSONDecodeError, KeyError) as e:
         print(f"Error parsing the model's response: {e}")
@@ -166,25 +175,30 @@ if __name__ == "__main__":
         for index, row in df.iterrows():
             root = row['path']
             file = row['file']
-            # only operate on those files created by data_convert
-            # ignore excluded flag at present, to make a comparison
+            # only operate on those files created by data_split
+            # Use the excluded flag to skip files
             if row['step'] == 1:
+                file_path = os.path.join(root, file)
                 if row['excl']:
                     logging.info(f"File: {file_path} flagged as excluded")
-                file_path = os.path.join(root, file)
-                logging.info(f"Processing file: {file_path}")
-                is_valid, explanation = genai_check(file_path)
-                if is_valid:
-                    logging.info(f"File '{file_path}' is of the required type.")
                 else:
-                    logging.info(f"File '{file_path}' is not of the required type.")
-                logging.info(f"Explanation: {explanation}")
-                df.loc[int(index),'suitable'] = is_valid
-                df.loc[int(index),'suitablereason'] = explanation
-                if not is_valid and record_exclusions:
-                    df.loc[int(index),'excl'] = True
-                    logging.info(f"Excluding file: {file_path}")
-                # insert a delay of 10s to avoid hammering the API and hitting rate limits
-                sleep(10)
+                    logging.info(f"Processing file: {file_path}")
+                    is_valid, explanation, skip_rows, lfc, pval, gene = genai_check(file_path)
+                    if is_valid:
+                        logging.info(f"File '{file_path}' is of the required type.")
+                    else:
+                        logging.info(f"File '{file_path}' is not of the required type.")
+                    logging.info(f"Explanation: {explanation}")
+                    df.loc[int(index),'suitable'] = is_valid
+                    df.loc[int(index),'suitablereason'] = explanation
+                    df.loc[int(index),'skip'] = skip_rows
+                    df.loc[int(index),'lfc'] = lfc
+                    df.loc[int(index),'pval'] = pval
+                    df.loc[int(index),'gene'] = gene
+                    if not is_valid and record_exclusions:
+                        df.loc[int(index),'excl'] = True
+                        logging.info(f"Excluding file: {file_path}")
+                    # insert a delay of 10s to avoid hammering the API and hitting rate limits
+                    sleep(10)
 
         save_tracking(df, tracking_file)

@@ -7,6 +7,7 @@ import uuid
 from rdflib import Graph, Namespace
 import logging
 
+
 # Set up logging
 def akg_logging_config(filename:str):
     """

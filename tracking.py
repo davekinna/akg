@@ -18,6 +18,9 @@ tracking_col_names = {'step':'int'
                         , 'cleaned':'bool'
                         , 'manual':"bool"
                         , 'manualreason':"str"
+                        , 'skip':'int'
+                        , 'pval':'str'
+                        , 'gene':'str'
                         , 'lfc':"str"
                         , 'graphfile':'str'
                         , 'matched':'int'
@@ -62,18 +65,18 @@ def create_tracking(folder:str, name:str='akg_tracking.xlsx'):
             pmid = os.path.basename(dirpath)
             # assuming a PMID consists of 8 digits
             if re.fullmatch(r'\d{8}',pmid):
-                new = tracking_entry(0,dirpath,pmid,filename,False,False,'',False,False,'','','', 0, 0,False,'')
+                new = tracking_entry(0,dirpath,pmid,filename,False,False,'',False,False,'', 0, '', '', '','', 0, 0,False,'')
                 df = add_to_tracking(df,new)
                 
     save_tracking(df, name)
 
-def tracking_entry(step:int, path:str, pmid:str, filename:str, excl:bool, derived:bool, source:str, cleaned:bool, manual:bool, manualreason:str, lfc:str,
-                   graphfile:str, matched:int, unmatched:int, suitable:bool, suitablereason:str)->pd.DataFrame:
+def tracking_entry(step:int, path:str, pmid:str, filename:str, excl:bool, derived:bool, source:str, cleaned:bool, manual:bool, manualreason:str, 
+                   skip:int, pval:str, gene:str, lfc:str, graphfile:str, matched:int, unmatched:int, suitable:bool, suitablereason:str)->pd.DataFrame:
     """
     Format the provided data into a default tracking entry
     """
     return pd.DataFrame([{'step':step,"path":path,"pmid":int(pmid),"file":filename, "excl":excl, "derived":derived,"source":source,"cleaned":cleaned, 
-                          "manual":manual, "manualreason":manualreason, 'lfc':lfc, 'graphfile':graphfile, 'matched':matched, 'unmatched':unmatched,
+                          "manual":manual, "manualreason":manualreason, "skip":skip, "pval":pval, "gene":gene,'lfc':lfc, 'graphfile':graphfile, 'matched':matched, 'unmatched':unmatched,
                           'suitable':suitable, 'suitablereason':suitablereason}])
 
 def load_tracking(name:str='akg_tracking.xlsx')->pd.DataFrame:
@@ -85,7 +88,7 @@ def load_tracking(name:str='akg_tracking.xlsx')->pd.DataFrame:
         raise AKGException(f'Tracking file {name} does not exist')
 
     with pd.ExcelFile(name) as xls:
-        df = pd.read_excel(xls, "akg tracking")  
+        df = pd.read_excel(xls, "akg tracking", keep_default_na=False)  
 
     # I'm sure there's a better way:
     df['step'] = df['step'].astype('int')
@@ -94,6 +97,7 @@ def load_tracking(name:str='akg_tracking.xlsx')->pd.DataFrame:
     df['derived'] = df['derived'].astype("bool")
     df['manual'] = df['manual'].astype("bool")
     df['cleaned'] = df['cleaned'].astype("bool")
+    df['skip'] = df['skip'].astype('int')
     df['matched'] = df['matched'].astype('int')
     df['unmatched'] = df['unmatched'].astype('int')
     df['suitable'] = df['suitable'].astype('bool')

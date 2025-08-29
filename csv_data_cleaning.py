@@ -63,6 +63,10 @@ def process_data_folder(data_folder:str,  tracking_file:str):
         file = row['file']
         pmid = row['pmid']
         lfc = row['lfc']
+        skip = row['skip'] # not really needed any more, generating expdata_filename will do the skip, retain for completeness
+        pval = row['pval']
+        gene = row['gene']
+
         file_path = os.path.join(root, file)
         if excl:
             logging.info(f"Excluding file: {file_path} manual: {row['manual']} : {row['manualreason']}")
@@ -73,7 +77,9 @@ def process_data_folder(data_folder:str,  tracking_file:str):
                 new_file_path = process_csv_file(file_path)
                 if new_file_path:
                     # Add the new file to the tracking DataFrame
-                    new_entry = tracking_entry(3, root, pmid, new_file_path, False, True, file_path, False, False,lfc, '', '', 0, 0)
+                    new_entry = tracking_entry(3, root, pmid, new_file_path,   False, True, file_path, False, False, '', skip, pval, gene, lfc, '', 0, 0, False, '')
+
+
                     tdf = add_to_tracking(tdf, new_entry)
                 df.loc[index,'cleaned'] = True
 
