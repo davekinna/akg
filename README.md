@@ -57,6 +57,18 @@ python akg\data_split.py -i <top_level>
 This will have created a file in the data directories, alongside the source data that was downloaded, called split_*tablename*.csv.
 These are now the working data files. data_split.py also will have created a tracking file called (by default) akg_tracking.xlsx, and a log file called data_split.log.
 
+3.1 Use AI to suggest which of the derived dataset files are suitable for subsequent processing.
+    - genai_check.py
+
+Use this as follows:
+```
+python akg\genai_check.py -i <top_level>
+```
+This needs to be run after data_split.py has been run. It looks for the derived dataset file names (with name split_*) and updates the value in column 'suitable' of the tracking file with TRUE if it judges the given file to be of further use, and puts its reasoning (whatever the outcome) in column 'suitablereason'.  If you judge that the AI check has been giving a good selection, use the -e argument to set the values in the 'excl' column to the same as those in the AI choice (see step 4 below):
+```
+python akg\genai_check.py -e -i <top_level>
+```
+
 3. checking each supplementary data file for relevant expression info and generating derived data set files, one for each table of data 
     - data_convert.py
 
@@ -66,17 +78,6 @@ python akg\data_convert.py -i <top_level>
 ```
 The derived dataset files are named expdata_<filename>.csv, where <filename> is the data file that it came from. These are in the same directory as the datafile itself.
 
-3.1 Use AI to suggest which of the derived dataset files are suitable for subsequent processing.
-    - genai_check.py
-
-Use this as follows:
-```
-python akg\genai_check.py -i <top_level>
-```
-This needs to be run after data_convert.py has been run. It looks for the derived dataset file names (with name expdata_*) and updates the value in column 'suitable' with TRUE if it judges the given file to be of further use, and puts its reasoning (whatever the outcome) in column 'suitablereason'.  If you judge that the AI check has been giving a good selection, use the -e argument to set the values in the 'excl' column to the same as those in the AI choice (see step 4 below):
-```
-python akg\genai_check.py -e -i <top_level>
-```
 
 4. Inspection and manual exclusion of data. 
 data_convert.py will create an excel spreadsheet 'tracking' file (by default named 'akg_tracking.xlsx'), with one line per downloaded supplementary data file, and then one line per derived dataset file.
