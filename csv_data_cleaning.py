@@ -6,9 +6,10 @@ import warnings
 import argparse
 import logging
 from akg import AKGException, akg_logging_config
-from tracking import create_tracking, load_tracking, save_tracking, create_empty_tracking_store, add_to_tracking, tracking_entry
+from tracking import check_tracking_writeable, create_tracking, load_tracking, save_tracking, create_empty_tracking_store, add_to_tracking, tracking_entry
 
 
+# TODO: #35 Implement logic to rename the 'ensembl' column
 def rename_ensembl_column(df):
     """finds a column with clear ensembl data and renames the column title
     """
@@ -32,9 +33,11 @@ def process_csv_file(file_path)->str:
     # Remove rows with multiple NAs or blanks
         df_cleaned = df.dropna(thresh=len(df.columns)//4)
         # Process column names to remove extra characters and gaps to help searching and prevent broken URIs
-        df_cleaned.columns = df_cleaned.columns.map(lambda x: re.sub(r'[\s\-_<>\(\)\[\]\{\}]', '', x.lower()))
+        # updated to take out double quotes
+        df_cleaned.columns = df_cleaned.columns.map(lambda x: re.sub(r'[\s\-_<>\(\)\[\]\{\}"]', '', x.lower()))
         # Rename Ensembl column if it exists
-        df_cleaned = rename_ensembl_column(df_cleaned)
+        # commented out, see Issue #35
+#         df_cleaned = rename_ensembl_column(df_cleaned)
 
         # prepend 'clean_' to the filename for output
         base_name = os.path.basename(file_path)
@@ -58,30 +61,33 @@ def process_data_folder(data_folder:str,  tracking_file:str):
     tdf = create_empty_tracking_store()
 
     for index, row in df.iterrows():
-        excl = row['excl']
-        root = row['path']
-        file = row['file']
-        pmid = row['pmid']
-        lfc = row['lfc']
-        skip = row['skip'] # not really needed any more, generating expdata_filename will do the skip, retain for completeness
-        pval = row['pval']
-        gene = row['gene']
+        if row['step'] == 2:
+            excl = row['excl']
+            root = row['path']
+            file = row['file']
+            pmid = row['pmid']
+            lfc = row['lfc']
+            pval = row['pval']
+            gene = row['gene']
 
-        file_path = os.path.join(root, file)
-        if excl:
-            logging.info(f"Excluding file: {file_path} manual: {row['manual']} : {row['manualreason']}")
-        else:
-            df.loc[index,'step'] = 2
-            if file.endswith('.csv'):
-                logging.info(f"Processing file: {file_path}")
-                new_file_path = process_csv_file(file_path)
-                if new_file_path:
-                    # Add the new file to the tracking DataFrame
-                    new_entry = tracking_entry(3, root, pmid, new_file_path,   False, True, file_path, False, False, '', skip, pval, gene, lfc, '', 0, 0, False, '')
-
-
-                    tdf = add_to_tracking(tdf, new_entry)
-                df.loc[index,'cleaned'] = True
+            file_path = os.path.join(root, file)
+            if excl:
+                logging.info(f"Excluding file: {file_path} manual: {row['manual']} : {row['manualreason']}")
+            else:
+                if file.endswith('.csv'):
+                    logging.info(f"Processing file: {file_path}")
+                    new_file_path = process_csv_file(file_path)
+                    if new_file_path:
+                        # Add the new file to the tracking DataFrame
+                        # Because the pval,gene,lfc data has been sanitised by process_csv_file, do the same to the column names which are stored here in the tracking file
+                        clean_pval = re.sub(r'[\s\-_<>\(\)\[\]\{\}"]', '', pval.lower())
+                        clean_gene = re.sub(r'[\s\-_<>\(\)\[\]\{\}"]', '', gene.lower())
+                        clean_lfc = re.sub(r'[\s\-_<>\(\)\[\]\{\}"]', '', lfc.lower())
+                        new_entry = tracking_entry(3, root, pmid, new_file_path,   False, True, file_path, False, False, '', 0, clean_pval, clean_gene, clean_lfc, '', 0, 0, False, '')
+                        tdf = add_to_tracking(tdf, new_entry)
+                    df.loc[index,'cleaned'] = True
+                else:
+                    logging.info(f"Skipping non-CSV file: {file_path}")
 
     # now the loop has finished add the accumulated tracking info into the main one
     df = add_to_tracking(df, tdf)
@@ -118,6 +124,9 @@ if __name__ == '__main__':
     # the tracking file must exist because it tells us which files to process
     if not os.path.exists(tracking_file):
         raise AKGException(f"csv_data_cleaning: {tracking_file} must exist")
+
+    if not check_tracking_writeable(tracking_file):
+        raise AKGException(f"csv_data_cleaning: {tracking_file} must be writable: close it in Excel and try again")
 
     supp_data_folder = os.path.join(main_dir,"supp_data")
     process_data_folder(supp_data_folder, tracking_file)

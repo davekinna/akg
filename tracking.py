@@ -52,6 +52,21 @@ def add_to_tracking(existing:pd.DataFrame, new:pd.DataFrame)->pd.DataFrame:
     """
     return pd.concat([existing,new],ignore_index=True)
 
+def check_tracking_writeable(tracking_file_path:str)->bool:
+    """
+    Check if the tracking file is writable
+    parameters:
+        tracking_file_path: str   The full path to the tracking file (actually any file)
+    """
+    try:
+        # 'w' will create the file if it doesn't exist.
+        with open(tracking_file_path, 'r+') as f:
+            # If open() succeeds, you will be able to write.
+            pass
+    except (IOError, PermissionError) as e:
+        return False
+    return True
+
 def create_tracking(folder:str, name:str='akg_tracking.xlsx'):
     """
     Create the file that can be used to track the contents of 'folder' through the akg process
@@ -109,7 +124,7 @@ def save_tracking(df:pd.DataFrame, name:str='akg_tracking.xlsx'):
     Save the tracking data to file
     """
     # sort the data first
-    sorted_df = df.sort_values(by=['step'])
+    sorted_df = df.sort_values(by=['step','pmid','file'])
 
     with pd.ExcelWriter(name) as writer:
         sorted_df.to_excel(writer,index=False,sheet_name='akg tracking', )  
