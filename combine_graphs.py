@@ -10,8 +10,10 @@ from akg import load_graph, AKGException, akg_logging_config
 import argparse
 import logging
 import os
+import sys
 
 def main():
+    command_line_str = ' '.join(sys.argv)    
     # manage the command line options
     parser = argparse.ArgumentParser(description='Combine graph files into a single file')
     parser.add_argument('-i','--input_dir', default='data', help='Destination top-level directory for input data files (output files also written here)')
@@ -44,13 +46,15 @@ def main():
 
     # set up logging
     akg_logging_config( os.path.join(main_dir, config['log']))
+    logging.info(f"Program executed with command: {command_line_str}")
 
     tracking_file = config['tracking_file']
     tracking_file = os.path.join(main_dir, tracking_file)
+    logging.info(f"Tracking file configured but not currently used in combine_graphs")
 
     # the tracking file must exist because it tells us which files to process
     if not os.path.exists(tracking_file):
-        raise AKGException(f"csv_data_cleaning: {tracking_file} must exist")
+        raise AKGException(f"Combining: {tracking_file} must exist")
 
     if pmid:
         logging.info(f"Combining graphs for PMID: {pmid}")
