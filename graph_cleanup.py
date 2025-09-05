@@ -2,7 +2,9 @@
 import re
 import argparse
 import os
-from akg import AKGException
+import logging
+import sys
+from akg import AKGException,akg_logging_config
 
 def process_nt_file(input_file:str, output_file:str):
     """Add extra data cleaning to the file graph file - ensures any values are given correct datatype (double or data), 
@@ -41,12 +43,14 @@ if __name__ == '__main__':
 
     """
 
+    command_line_str = ' '.join(sys.argv)
     parser = argparse.ArgumentParser(description='Cleanup knowledge graph .nt files and apply conventions')
 
     parser.add_argument('-i','--input_dir', default='data', help='Destination top-level directory for data files.(input and output)')
     parser.add_argument('-g','--graph_dir', default='graph', help='Subdirectory for graph files')
     parser.add_argument('-n','--input', default='main_graph.nt', help='Input file')
     parser.add_argument('-u','--output', default='cleaned_main_graph.nt', help='Output file')
+    parser.add_argument('-l','--log', default='graph_cleanup.log', help='Log file name. This file is created in the top-level directory.')
 
     # argparse populates an object using parse_args
     # extract its members into a dict and from there into variables if used in more than one place
@@ -55,6 +59,9 @@ if __name__ == '__main__':
     main_dir = config['input_dir']
     if not os.path.isdir(main_dir):
         raise AKGException(f"data_convert: data directory {main_dir} must exist")
+    # set up logging
+    akg_logging_config( os.path.join(main_dir, config['log']))
+    logging.info(f"Program executed with command: {command_line_str}")
 
     input_file = config['input']
     output_file = config['output']
@@ -64,3 +71,4 @@ if __name__ == '__main__':
     full_graph_output = os.path.join(main_dir,graph_dir,output_file)
 
     process_nt_file(full_graph_path, full_graph_output)
+    logging.info(f"Graph file {full_graph_path} cleaned and written to {full_graph_output}")
