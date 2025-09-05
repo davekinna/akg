@@ -168,7 +168,7 @@ def process_regular_csv(csv_file_path:str, matched_genes, unmatched_genes, graph
         # Loop through the rest of the file to process data rows
         rowIndex = 0
         for i, line in enumerate(csvfile):
-            data_fields = line.strip('"').split(',')
+            data_fields = line.strip().strip('"').split(',')
             
             # Ensure the row has enough columns before we try to access our index
             n_fields = len(data_fields)
