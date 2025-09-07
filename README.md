@@ -110,15 +110,24 @@ python akg\csv_data_cleaning.py -i <top_level>
 6. mapping to rdf triples
     - create_rdf_triples.py
     - graph_cleanup.py
+Use these as follows:
+```
+python akg\create_rdf_triples.py -f -i d2025-08-26
+```
+```
+python .\akg\graph_cleanup.py -i d2025-08-26 -n combined.nt -u clean_combined.nt
+```
+This takes the file d2025-08-26\graph\combined.nt, applies some cleaning criteria (currently putting the date and numerical quantities into a consistent format), and sends the output to d2025-08-26\graph\clean_combined.nt. This cleaning could be applied as part of the create_rdf_triples step: using a separate program allows a change in the reformatting to be applied without timeconsuming re-scanning of all the data files.
 
-7. data testing and analysis (see analysis directory)
-    - general_tests.ipynb
-    - graphanalysis.ipynb
-    - usecase1.ipynb
-    - usecase2.ipynb
-    - usecase2.ipynb
-
-Retrieved article outputs are stored in the 'data' directory, the rdf graph is stored in 'cleaned_maingraph.nt' .
+7. data testing and analysis
+Example SparQL query files are in directory akg\query. These can be incorporated into Jupyter notebook files. Alternatively, the following utility will execute a SparQL query and write its output to another file, with logging and data in the usual locations, and input (-q) and output (-o) files relative to the data (-i) directory:
+```
+python .\akg\query_graph.py -i d2025-08-26 -q hgnc.rq -u hgnc.csv clean_combined.nt
+```
+alternatively the following loads the graph given and gives the user to a command line that can be used to send repeat queries to the graph:
+```
+python .\akg\query_graph.py -i d2025-08-26 clean_combined.nt
+```
 
 ## Developer notes
 * Work on the 'dev' branch, merge back into the main branch for stable versions
