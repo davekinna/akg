@@ -18,12 +18,10 @@ def main():
     parser.add_argument('-t','--tracking_file', default='akg_tracking.xlsx', help='Tracking file name. This file is created in the top-level directory.')
     parser.add_argument('-m','--metadata', action='store_true', help="Process the article metadata file (default is to skip this step)")
     parser.add_argument('-l','--log', default='tracking_report.log', help='Log file name. This file is created in the top-level directory.')
-    parser.add_argument('-e', '--excluded', action='store_false', help="Report on excluded PMIDs (default is to skip this step)")
     parser.add_argument('-r','--report_file', default='tracking_report.txt', help='Report file name. This file is created in the top-level directory.')
     config = vars(parser.parse_args())
 
     metadata = config['metadata']
-    excluded = config['excluded']
 
     main_dir = config['input_dir']  
 
@@ -55,7 +53,7 @@ def main():
     report_file = os.path.join(main_dir, report_file)
     with open(report_file, 'w', encoding='utf-8-sig') as rf:
         rf.write(f"Tracking report generated from tracking file {tracking_file}\n")
-        rf.write(f"Number of source PMIDs (step=0): {len(tdf[tdf['step']== 0])}\n")
+        rf.write(f"Number of source PMIDs (step=0): {len(tdf[tdf['step']== 0]['pmid'].unique())}\n")
         rf.write("Source PMIDs (step=0):\n")
         for pmid in tdf[tdf['step']== 0]['pmid'].unique():
             rf.write(f"{pmid}\n")
