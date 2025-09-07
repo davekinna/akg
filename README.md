@@ -19,7 +19,11 @@ git checkout dev
 ... and then return to the parent directory (cd ..), the examples below do this to avoid mixing code and data. With the current immature version of the code, you may need to install modules to run the code.
 
 ## Workflow for using the code
-This section is an outline of the project and available code.  I assume here you are running from the directory level above the source code (which is in directory akg).
+This section is an outline of the project and available code.  
+
+
+
+I assume here you are running from the directory level above the source code (which is in directory akg).
 
 All code files named below have a command line interface that give some control of configuration. Type, for example:
 ```
