@@ -118,7 +118,9 @@ def main():
                 logging.info(f"Wrote {len(results)} results to {output_file}")
             except KeyboardInterrupt:
                 print("\nExiting interactive mode.")
-                break
+                logging.info(f"Exiting interactive mode.")
+                # actually put in an exit() here, it was hanging.
+                sys.exit(0)
             except Exception as e:
                 logging.error(f"Error executing query: {e}")
     return 

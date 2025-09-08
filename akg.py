@@ -225,6 +225,9 @@ class GeneIdStore:
         logging.info(f'symbol to hgnc dict has {len(self._symbol_to_hgnc)} entries')
         logging.info(f'other_id to hgnc dict has {len(self._oth)} entries')
 
+    def get_hgnc_symbol(self, hgnc_id: str) -> str:
+        return self._hgnc_to_symbol.get(hgnc_id, "")
+
     def get_gene_id(self, gene_name:str):
         # Remove 'hp_' and variant info to help matching process
         if gene_name.startswith('hp_'):
@@ -278,6 +281,7 @@ class GeneIdStore:
         """
         self._ensembl_to_hgnc = {}
         self._symbol_to_hgnc = {}
+        self._hgnc_to_symbol = {}
         # simple flag to check this is useable
         self._ETH = False
 
@@ -305,6 +309,7 @@ class GeneIdStore:
                             self._ensembl_to_hgnc[ensembl_id] = hgnc_id
                             if hgnc_symbol:
                                 self._symbol_to_hgnc[hgnc_symbol] = hgnc_id
+                                self._hgnc_to_symbol[hgnc_id] = hgnc_symbol
 
         except FileNotFoundError:
             logging.error(f"Error: The file '{hgnc_file}' was not found.")

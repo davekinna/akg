@@ -1,0 +1,34 @@
+PREFIX pmid: <https://pubmed.ncbi.nlm.nih.gov/>
+PREFIX EDAM: <http://edamontology.org/>
+PREFIX BIOLINK: <https://w3id.org/biolink/vocab/>
+PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+PREFIX ENSEMBL: <http://identifiers.org/ensembl/>
+PREFIX NCBIGENE: <http://identifiers.org/ncbigene/>
+
+# Select the values we want to return
+SELECT ?geneIdentifier ?logFoldChange ?pValue
+
+WHERE {
+  # Specify the PMID
+  VALUES ?pmid_uri { pmid:33262327 }
+
+  # define the subject-predicate-object triples that make the part of the graph we're interested in
+  # note that these define more variables that are used later
+  ?pmid_uri EDAM:has_output ?dataset .
+  ?dataset EDAM:has_output ?row .
+  ?row EDAM:data_3754 ?logFoldChange .
+  ?row EDAM:data_1669 ?pValue .
+
+  # OPTIONAL defines each possible gene predicate
+  OPTIONAL { ?row BIOLINK:Gene ?geneURI . }
+  OPTIONAL { ?row ENSEMBL:id ?geneENS . }
+  OPTIONAL { ?row NCBIGENE:id ?geneNCBI . }
+  OPTIONAL { ?row BIOLINK:symbol ?geneSYM . }
+
+  # COALESCE gets the first non-empty value, put this in geneIdentifier
+  BIND(COALESCE(?geneURI, ?geneENS, ?geneNCBI, ?geneSYM) AS ?geneIdentifier)
+
+  # Filter for significant results
+  FILTER (?logFoldChange > 2.5 && ?pValue < 0.05)
+}
+ORDER BY DESC(?logFoldChange)
