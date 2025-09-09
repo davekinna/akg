@@ -132,6 +132,7 @@ alternatively the following loads the graph given and gives the user to a comman
 ```
 python .\akg\query_graph.py -i d2025-08-26 clean_combined.nt
 ```
+This is useful when working with large graphs that take a long time to load.
 
 ## Developer notes
 * Work on the 'dev' branch, merge back into the main branch for stable versions
