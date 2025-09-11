@@ -203,9 +203,9 @@ def process_regular_csv(csv_file_path:str, matched_genes, unmatched_genes, graph
                         logging.debug(f"Added gene information for {row_gene}: {full_monarch_uri}")
                         matched_genes += 1
                     else:
-                        if 'ensembl' in row_gene.lower():
+                        if 'ensembl' in gene_name.lower():
                             graph.add((row_uri, ENSEMBL.id, Literal(row_gene)))
-                        elif 'entrez' in row_gene.lower() or 'ncbi' in row_gene.lower():
+                        elif 'entrez' in gene_name.lower() or 'ncbi' in gene_name.lower():
                             graph.add((row_uri, NCBIGENE.id, Literal(row_gene)))
                         else:
                             graph.add((row_uri, BIOLINK.symbol, Literal(row_gene)))

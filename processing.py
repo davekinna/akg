@@ -1,14 +1,15 @@
-#This file searches the Entrez database for relevant papers, retreives their DOIs metadata, obtains a pdf 
+#This file searches the Entrez database for relevant papers, retrieves their DOIs metadata, obtains a pdf 
 # of the original paper, and all supporting data xlsx files
 
-# importing libraries
 from Bio import Entrez
-Entrez.api_key = "dde04e5b368b5a43e07ab39bec7b31100e08"
+from dotenv import load_dotenv
+
 from metapub.convert import pmid2doi
+
 import os
 import argparse
 import sys
-
+import logging
 from bs4 import BeautifulSoup,  SoupStrainer
 import requests
 from urllib.request import urlopen, urlretrieve
@@ -19,12 +20,27 @@ from functools import reduce
 from metapub import PubMedFetcher
 from selenium import webdriver
 from urllib.parse import urljoin
-from akg import AKGException
+from akg import AKGException, akg_logging_config
+import configparser
+
+# Load environment variables from .env file
+load_dotenv()
+# a suitable format for the line in the .env file is:
+# ENTREZ_API_KEY="Your-API-Key-Here"
+# include .env in .gitignore.
+
+# Get the API key from the environment
+Entrez.api_key = os.getenv('ENTREZ_API_KEY')
+
+if not Entrez.api_key:
+    raise ValueError("API key not found. Please set it in your .env file.")
+
 
 def get_search_result():
     """Article search, returning PMIDs for articles matching terms relating to Autism and gene expression"""
     Entrez.email = input("Enter email address for NCBI Entrez: ")
     while '@' not in Entrez.email or '.' not in Entrez.email:
+        logging.error("Invalid email format. Try again.")
         print("Invalid email format. Try again.")
         Entrez.email = input("Enter email address for NCBI Entrez: ")
     handle = Entrez.esearch(db='pubmed',
@@ -39,11 +55,12 @@ def get_search_result():
 def get_pmids(search_res) -> list[int]:
     """Stores a list of retrieved PMIDs"""
     initial_list = search_res["IdList"]
-    print(len(initial_list))
+    logging.info(f"{len(initial_list)} pmids")
     return initial_list
 
 
 def get_dois(plist: list[int]) -> tuple[list[int], list[str]]:
+
     """Converts each PMID to a DOI, returns valid PMIDs and new DOIs as separate lists"""
     doi_list = []
     valid_pmids = []
@@ -55,7 +72,7 @@ def get_dois(plist: list[int]) -> tuple[list[int], list[str]]:
                 valid_pmids.append(i)
         except TypeError:
             continue
-    print(f"Found {len(doi_list)} DOIs out of {len(plist)} PMIDs")
+    logging.info(f"Found {len(doi_list)} DOIs out of {len(plist)} PMIDs")
     return valid_pmids, doi_list
 
 
@@ -257,7 +274,7 @@ def get_upw(doi_list:list[str], output_dir:str, email:str):
             print(f"Error processing {doi}: {e}")
 
 
-def get_metadata(plist: list[int], dlist: list[str]):
+def get_metadata(plist: list[int], dlist: list[str], article_metadata_file:str):
     fetch = PubMedFetcher()
     articles = {}
     for pmid in plist:
@@ -295,16 +312,12 @@ def get_metadata(plist: list[int], dlist: list[str]):
     df_merged['exclude reason'] = ''
 
     # Export the merged DataFrame to a CSV file
-    main_dir = 'data'
-    if not os.path.isdir(main_dir):
-        os.mkdir(main_dir)
-    file_path = os.path.join(main_dir, 'asd_article_metadata.csv')
-    if os.path.isfile(file_path):
-        print(f"File '{file_path}' already exists. Overwriting it.")
-        df_merged.to_csv(file_path, index=False)
+    if os.path.isfile(article_metadata_file):
+        logging.info(f"File '{article_metadata_file}' already exists. Overwriting it.")
+        df_merged.to_csv(article_metadata_file, index=False)
     else:
-        df_merged.to_csv(file_path, index=False)
-        print(f"File '{file_path}' created.")
+        df_merged.to_csv(article_metadata_file, index=False)
+        logging.info(f"File '{article_metadata_file}' created.")
     return None
 
 
@@ -323,24 +336,34 @@ def main():
         parser = argparse.ArgumentParser(description='Download and initially process supplementary data')
         parser.add_argument('-t','--search-term', default=DEFAULT_SEARCH_TERM, help='default search term')
         parser.add_argument('-c','--count', default=DEFAULT_RETURN_COUNT, help="default number of search results to return")
-        # TODO: #13 link output data directory command line
-        parser.add_argument('-o','--output_dir', default='data', help='Destination top-level directory for output files')
+        # TODO: #13 link  data directory command line
+        parser.add_argument('-i','--input_dir', default='data', help='Destination top-level directory for downloaded data files (input to graph)')
         parser.add_argument('-s','--search', action='store_true', help='Do the search')
-        parser.add_argument('-p','--pdf', action='store_true', help="Download the articles as PDFs if available")
+        parser.add_argument('-f','--pdf', action='store_true', help="Download the articles as PDFs if available")
+        parser.add_argument('-p','--pmid', default='', help="Download only data for this PMID")
         # TODO: #10 link download data option command line
-        parser.add_argument('-d','--data', action='store_true', help="Download the supplementary data if available")
+        parser.add_argument('-d','--download', action='store_true', help="Download the supplementary data if available")
         parser.add_argument('-e','--email', help='email address to supply to NCBI and Unpaywall')
+        parser.add_argument('-l','--log', default='processing.log', help='Log file name. This file is created in the top-level directory')
 
         # argparse populates an object using parse_args
         # extract its members into a dict and from there into variables if used in more than one place
         config = vars(parser.parse_args())
 
-        main_dir = config['output_dir']
+        main_dir = config['input_dir']
         os.makedirs(main_dir, exist_ok=True)
+
+        if not os.path.isdir(main_dir):
+            raise AKGException(f"processing.py: data directory '{main_dir}' could not be created")
+
+        akg_logging_config( os.path.join(main_dir, config['log']))
+        logging.info(f"Program executed with command: {command_line_str}")
+
+        article_metadata_file = os.path.join(main_dir, "asd_article_metadata.csv")
 
         # choose the 'search' option (-s) to force the search to be done
         if config['search']:
-            print("Search option chosen")
+            logging.info("Search option chosen")
             # get_search_result has the predefined search term, and prompts on the console for the user email address
             search_data = get_search_result()
             # get_pmids just extracts the pmids from the structure returned
@@ -349,12 +372,17 @@ def main():
             valid_pmids, doi_data = get_dois(pmid_data)
             # get_metadata is working fine. It retrieves a lot of metadata separately into DataFrames, 
             # then merges this into a master DataFrame and saves it as a csv file
-            get_metadata(valid_pmids, doi_data)
-        
+            get_metadata(valid_pmids, doi_data, article_metadata_file)
+        else:
+            if not os.path.exists(article_metadata_file):
+                error_message = '-s option not chosen and no metadata file exists'
+                logging.error(error_message)
+                raise AKGException(error_message)
+
         # this is a change of process: always read back the valid_pmids and doi_data from the file so we can skip the search 
         # and metadata retrieval if it's already been done
         # Load CSV
-        df = pd.read_csv("data/asd_article_metadata.csv")
+        df = pd.read_csv(article_metadata_file)
 
         # only work on the entries that haven't been excluded
         df = df[~df['exclude']]
@@ -365,14 +393,14 @@ def main():
 
         url_data = get_urls(valid_pmids)
         if config['pdf']:
-            print("PDF download option chosen")
+            logging.info("PDF download option chosen")
             email  = config['email']
             art_output_dir = 'article_data'
             pdf_output_path = os.path.join(main_dir, art_output_dir)
             # get the PDFs
             get_upw(doi_data, pdf_output_path, email=email)
 
-        if config['data']:
+        if config['download']:
             print('Download supplementary data option')
             print('Working directory: '+os.getcwd())
             supp_output_dir = 'supp_data'
@@ -387,10 +415,6 @@ def main():
     except AKGException as e:
         print(e)
         sys.exit(0)
-
-import os
-import sys
-import configparser
 
 # chatgpt code to find firefox path
 def get_firefox_profiles():
@@ -435,7 +459,4 @@ if __name__ == "__main__":
         mark = "(default)" if info['default'] else ""
         print(f"{name:20s} {info['path']} {mark}")
 
-#future additions - add a function to be used to pull only new data
-
-if __name__ == "__main__":
     main()

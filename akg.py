@@ -229,7 +229,9 @@ class GeneIdStore:
         return self._hgnc_to_symbol.get(hgnc_id, "")
 
     def get_gene_id(self, gene_name:str):
+
         # Remove 'hp_' and variant info to help matching process
+        whole_gene_name = gene_name
         if gene_name.startswith('hp_'):
             gene_name = gene_name[3:]
         if '_' in gene_name[-5:]:
@@ -255,6 +257,15 @@ class GeneIdStore:
                 print(f"HGNC ID found for ensemble ID {u_gene_name}, version omitted")
                 return direct_lookup
         # if we get here, it is not an ensemble ID, so try the other one
+        # first try the unmodified name
+        hgnc_whole_lookup = self._symbol_to_hgnc.get(whole_gene_name, None)
+        if hgnc_whole_lookup is not None:
+            return hgnc_whole_lookup
+        # then try the modified name before case change
+        hgnc_direct_lookup = self._symbol_to_hgnc.get(gene_name, None)
+        if hgnc_direct_lookup is not None:
+            return hgnc_direct_lookup
+        # then try with upper case
         hgnc_direct_lookup = self._symbol_to_hgnc.get(u_gene_name, None)
         if hgnc_direct_lookup is not None:
             return hgnc_direct_lookup
@@ -298,18 +309,28 @@ class GeneIdStore:
 
             # Iterate over each gene in the dataset
             for gene in gene_docs:
+                hgnc_id = gene.get('hgnc_id')
+                # these are the actual nominated symbols
+                hgnc_symbol = gene.get('symbol')
+                # the file also contains previous symbols and alias symbols
+                prev = gene.get('prev_symbol', [])
+                alias = gene.get('alias_symbol', [])
+                for prev_symbol in prev:
+                    if hgnc_id and prev_symbol:
+                        self._symbol_to_hgnc[prev_symbol] = hgnc_id                    
+                for alias_symbol in alias:
+                    if hgnc_id and alias_symbol:
+                        self._symbol_to_hgnc[alias_symbol] = hgnc_id
+                if hgnc_symbol:
+                    self._symbol_to_hgnc[hgnc_symbol] = hgnc_id
+                    self._hgnc_to_symbol[hgnc_id] = hgnc_symbol
+
                 # Check if the gene has an Ensembl ID
                 if 'ensembl_gene_id' in gene:
                     ensembl_id = gene['ensembl_gene_id']
-                    hgnc_id = gene.get('hgnc_id')
-                    hgnc_symbol = gene.get('symbol')
-
                     if ensembl_id:
                         if hgnc_id:
                             self._ensembl_to_hgnc[ensembl_id] = hgnc_id
-                            if hgnc_symbol:
-                                self._symbol_to_hgnc[hgnc_symbol] = hgnc_id
-                                self._hgnc_to_symbol[hgnc_id] = hgnc_symbol
 
         except FileNotFoundError:
             logging.error(f"Error: The file '{hgnc_file}' was not found.")
@@ -359,7 +380,26 @@ def test_sanity():
     """
     function test_sanity - checks the testing is working
     """
-    
+    assert 1 + 1 == 2
+
+def test_prev_hgnc_symbol():
+    """
+    test the previous symbols in the hgnc data can be found
+    """
+    mygids = GeneIdStore()
+    assert mygids.get_gene_id('HIST1H2AC') == 'HGNC:4733'
+    assert mygids.get_gene_id('H2AFL') == 'HGNC:4733'
+    assert mygids.get_gene_id('H2AC6') == 'HGNC:4733'
+
+def test_alias_hgnc_symbol():
+    """
+    test the alias symbols in the hgnc data can be found
+    """
+    mygids = GeneIdStore()
+    assert mygids.get_gene_id('C20orf111') == 'HGNC:16105'
+    assert mygids.get_gene_id('Perit1') == 'HGNC:16105'
+    assert mygids.get_gene_id('dJ1183I21.1') == 'HGNC:16105'
+    assert mygids.get_gene_id('HSPC207') == 'HGNC:16105'
 
 def test_original_get_gene_id():
     """
