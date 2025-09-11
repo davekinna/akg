@@ -35,10 +35,10 @@ Steps in creating and using a graph are as follows:
 
 2. find relevant articles:
 ```
-python akg\processing.py -s -i d2025-08-12
+python akg\processing.py -s -i <top_level>
 ```
 This conducts a search for suitable articles, and saves information about them to 'asd_article_metadata.csv'.  
-It doesn't download them. Instead, you should review 'asd_article_metadata.csv' and exclude articles that you don't want to continue with, by marking the 'exclude' column 'True'.
+It doesn't download them. Instead, you should review 'asd_article_metadata.csv' and exclude articles that you don't want to continue with, by marking the 'Exclude' column 'TRUE'.
 
 3. retrieve more article metadata, abstracts and the supplementary data files (tables of data) that will eventually form the graph:
 ```
@@ -61,10 +61,7 @@ python akg\data_split.py -i <top_level>
 This will have created a file in the data directories, alongside the source data that was downloaded, called split_*tablename*.csv. It does this for *all files* in the supp_data/<pmid> directories, so delete or move any data that you don't want included at this point, or work in a new separate <top_level> directory if necessary.
 These are now the working data files. data_split.py also will have created a tracking file called (by default) akg_tracking.xlsx, and a log file called data_split.log.
 
-3.1 Use AI to suggest which of the derived dataset files are suitable for subsequent processing.
-    - genai_check.py
-
-Use this as follows:
+3.1 Use AI to suggest which of the derived dataset files are suitable for subsequent processing:
 ```
 python akg\genai_check.py -i <top_level>
 ```
@@ -74,9 +71,6 @@ python akg\genai_check.py -e -i <top_level>
 ```
 
 3. checking each supplementary data file for relevant expression info and generating derived data set files, one for each table of data 
-    - data_convert.py
-
-Use this as follows:
 ```
 python akg\data_convert.py -i <top_level>
 ```
@@ -103,18 +97,13 @@ The code that matches the log fold change column is a simple text match as follo
 An example of where one would manually exclude the answer given by this algorithm was where a column headed 'ontology' is wrongly identified because this word contains the substring 'log'.
 
 6. data cleaning
-    - csv_data_cleaning.py 
 This implements a simple cleaning algorithm on the data. It outputs a file clean_expdata_<filename>.csv for each dataset.
 
-Use this as follows:
 ```
 python akg\csv_data_cleaning.py -i <top_level>
 ```
 
 6. mapping to rdf triples
-    - create_rdf_triples.py
-    - graph_cleanup.py
-Use these as follows:
 ```
 python akg\create_rdf_triples.py -f -i d2025-08-26
 ```
