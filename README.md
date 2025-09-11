@@ -21,8 +21,6 @@ git checkout dev
 ## Workflow for using the code
 This section is an outline of the project and available code.  
 
-
-
 I assume here you are running from the directory level above the source code (which is in directory akg).
 
 All code files named below have a command line interface that give some control of configuration. Type, for example:
@@ -33,32 +31,34 @@ to run the code and identify the available options.  In the following examples m
 
 Steps in creating and using a graph are as follows:
 
-0. Create a working directory for your downloaded data, derived data and graph files. In the examples I've named my working directories with the date, for example, 'd2025-08-12'. I refer to this here as <top_level>
+1. Create a working directory for your downloaded data, derived data and graph files. I refer to this here as <top_level>. Everything will be downloaded to, or generated here. 
 
-2. finding relevant articles
-    - processing.py
-
-3. retrieving article metadata, abstracts and supplementary data files
-    - processing.py
-
-Use this as follows:
+2. find relevant articles:
 ```
-python akg\processing.py -o <top_level>
+python akg\processing.py -s -i d2025-08-12
 ```
+This conducts a search for suitable articles, and saves information about them to 'asd_article_metadata.csv'.  
+It doesn't download them. Instead, you should review 'asd_article_metadata.csv' and exclude articles that you don't want to continue with, by marking the 'exclude' column 'True'.
 
-The data files are output to <top_level>/supp_data.  The next level of directories under supp_data is named by the numeric pubmed ID value. 
+3. retrieve more article metadata, abstracts and the supplementary data files (tables of data) that will eventually form the graph:
+```
+python akg\processing.py -d -i <top_level>
+```
+This will scan asd_article_metadata.csv for the non-excluded files, and download supplementary data for them. The data files are output to <top_level>/supp_data.  The next level of directories under supp_data is named by the numeric pubmed ID value. 
 So, the files are/should be downloaded to <top_level>/supp_data/<PMID>.
 
 Excluding downloaded data at this point based on PMID can be achieved by deleting it or moving it to a different location. The subsequent steps only work on files under the given top level directory.
 
-3. Split the supplementary data files if necessary and generate derived data set files, one CSV file for each table of data. These are called split_*.csv.
-    - data_split.py
+As an alternative, to just go through the process for one publication, provide its PMID on the command line:
+```
+python akg\processing.py -p <pmid> -d -i <top_level>
+```
 
-Use this as follows:
+4. Split the supplementary data files if necessary and generate derived data set files, one CSV file for each table of data. These are called split_*.csv.
 ```
 python akg\data_split.py -i <top_level>
 ```
-This will have created a file in the data directories, alongside the source data that was downloaded, called split_*tablename*.csv.
+This will have created a file in the data directories, alongside the source data that was downloaded, called split_*tablename*.csv. It does this for *all files* in the supp_data/<pmid> directories, so delete or move any data that you don't want included at this point, or work in a new separate <top_level> directory if necessary.
 These are now the working data files. data_split.py also will have created a tracking file called (by default) akg_tracking.xlsx, and a log file called data_split.log.
 
 3.1 Use AI to suggest which of the derived dataset files are suitable for subsequent processing.
