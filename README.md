@@ -27,7 +27,7 @@ All code files named below have a command line interface that give some control 
 ```
 python akg\data_convert.py --help
 ```
-to run the code and identify the available options.  In the following examples many of the defaults have been used, and so the tracking file, for example, is given the name 'akg_tracking.xlsx'. If you change this at an early stage, subsequent steps must be supplied with the same value because they read from as well as write to the tracking file.
+to identify the available options.  In the following examples many of the defaults have been used, and so the tracking file, for example, is given the name 'akg_tracking.xlsx'. If you change this at an early stage, subsequent steps must be supplied with the same value because they read from as well as write to the tracking file.
 
 Steps in creating and using a graph are as follows:
 
