@@ -116,7 +116,7 @@ This generates a .nt 'triple' file for each data file that is not excluded. It a
 ```
 python .\akg\graph_cleanup.py -i <top_level> -n combined.nt -u clean_combined.nt
 ```
-This takes the file d2025-08-26\graph\combined.nt, applies some cleaning criteria (currently putting the date and numerical quantities into a consistent format), and sends the output to d2025-08-26\graph\clean_combined.nt. This cleaning could be applied as part of the create_rdf_triples step: using a separate program allows a change in the reformatting to be applied without timeconsuming re-scanning of all the data files.
+This takes the file <top_level>\graph\combined.nt, applies some cleaning criteria (currently putting the date and numerical quantities into a consistent format), and sends the output to <top_level>\graph\clean_combined.nt. This cleaning could be applied as part of the create_rdf_triples step: using a separate program allows a change in the reformatting to be applied without timeconsuming re-scanning of all the data files.
 
 9. data testing and analysis
 Example SparQL query files are in directory akg\query. These can be incorporated into python or Jupyter notebook files. Alternatively, the following utility will execute a SparQL query and write its output to another file, with logging and data in the usual locations, and input (-q) and output (-o) files relative to the data (-i) directory:
