@@ -1,0 +1,31 @@
+# Define prefixes for all namespaces
+PREFIX EDAM: <http://edamontology.org/>
+PREFIX BIOLINK: <https://w3id.org/biolink/vocab/>
+PREFIX pmid: <https://pubmed.ncbi.nlm.nih.gov/>
+PREFIX monarch: <https://monarchinitiative.org/>
+
+# Select the gene and the count of PMIDs it's associated with
+SELECT ?gene (COUNT(DISTINCT ?pmid_uri) AS ?pmidCount)
+
+WHERE {
+  # Find the path from a PMID to a gene
+  ?pmid_uri EDAM:has_output ?dataset .
+  ?dataset EDAM:has_output ?row .
+  ?row BIOLINK:Gene ?gene .
+
+  # Optional: Filter to ensure we are only looking at Monarch genes
+  FILTER(STRSTARTS(STR(?gene), "https://monarchinitiative.org/"))
+}
+# Group all the rows by the gene identifier
+GROUP BY ?gene
+
+# The HAVING clause filters the results *after* grouping
+# Keep only the groups where the count of distinct PMIDs is 2 or more
+HAVING (COUNT(DISTINCT ?pmid_uri) >= 2)
+
+# Optional: Order the results to see the most shared genes first
+ORDER BY DESC(?pmidCount)
+
+# Optional: Limit the number of results
+# no limit here!
+# LIMIT 25

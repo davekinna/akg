@@ -38,16 +38,30 @@ def process_csv_file(file_path:str, skip_rows:int=0, pval_name:str='', gene_name
     file_name = os.path.splitext(os.path.basename(file_path))[0]
     # Try reading with different settings
     for encoding in ['utf-8', 'iso-8859-1', 'latin1']:
-        for delim in ['\t', ',', ';']:  # prioritize tab
-            try:
-                # *this is the only point where the skip at the start of the file is made*
-                # after this stage, the column headers are assumed to be on the first line.
-                df = pd.read_csv(file_path, delimiter=delim, encoding=encoding, on_bad_lines='warn', skiprows=skip_rows)
-                if not df.empty:
-                    new_file = process_dataframe(df, file_name, output_dir, file_path, input_delimiter=delim, skip_rows=skip_rows, pval_name=pval_name, gene_name=gene_name, lfc_name=lfc_name)
-                    return add_to_tracking(tdf, new_file)
-            except Exception as e:
-                logging.error(f"Failed to read {file_path} with delimiter '{delim}' and encoding '{encoding}': {str(e)}")
+        # remove tab stuff and see if python can detect the file on its own
+        try:
+            # *this is the only point where the skip at the start of the file is made*
+            # after this stage, the column headers are assumed to be on the first line.
+            df = pd.read_csv(file_path, delimiter=None, engine='python', encoding=encoding, on_bad_lines='warn', skiprows=skip_rows)
+            if len(df.columns) <= 1:
+                logging.warning('pd.read_csv detected 1 column only. This is unlikely.')
+            if not df.empty:
+#                new_file = process_dataframe(df, file_name, output_dir, file_path, input_delimiter=delim, skip_rows=skip_rows, pval_name=pval_name, gene_name=gene_name, lfc_name=lfc_name)
+                new_file = process_dataframe(df, file_name, output_dir, file_path, input_delimiter=None, skip_rows=skip_rows, pval_name=pval_name, gene_name=gene_name, lfc_name=lfc_name)
+                return add_to_tracking(tdf, new_file)
+        except Exception as e:
+            logging.error(f"Failed to read {file_path} with encoding '{encoding}': {str(e)}")
+#            logging.error(f"Failed to read {file_path} with delimiter '{delim}' and encoding '{encoding}': {str(e)}")
+        # for delim in ['\t', ',', ';']:  # prioritize tab
+        #     try:
+        #         # *this is the only point where the skip at the start of the file is made*
+        #         # after this stage, the column headers are assumed to be on the first line.
+        #         df = pd.read_csv(file_path, delimiter=delim, encoding=encoding, on_bad_lines='warn', skiprows=skip_rows)
+        #         if not df.empty:
+        #             new_file = process_dataframe(df, file_name, output_dir, file_path, input_delimiter=delim, skip_rows=skip_rows, pval_name=pval_name, gene_name=gene_name, lfc_name=lfc_name)
+        #             return add_to_tracking(tdf, new_file)
+        #     except Exception as e:
+        #         logging.error(f"Failed to read {file_path} with delimiter '{delim}' and encoding '{encoding}': {str(e)}")
 
     # If all attempts fail, try reading as plain text
     try:
@@ -124,11 +138,12 @@ def process_dataframe(df:pd.DataFrame, sheet_name:str, output_dir:str, file_path
             original_filename = os.path.splitext(os.path.basename(file_path))[0]
             new_filename = f"{new_filestub}_{original_filename}.csv"
             output_file = os.path.join(output_dir, new_filename)
-
-        if input_delimiter == '\t':
-            df.to_csv(output_file, index=False, sep=',')
-        else:
-            df.to_csv(output_file, index=False)
+        # the if statement is redundant
+        # if input_delimiter == '\t':
+        #     df.to_csv(output_file, index=False, sep=',')
+        # else:
+        #     df.to_csv(output_file, index=False)
+        df.to_csv(output_file, index=False)
         logging.info(f"Saved {sheet_name} as CSV: {output_file}")
 
         # assume the pmid is the last component of the output dir

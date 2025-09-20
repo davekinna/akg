@@ -3,7 +3,7 @@ import sys
 import os
 from akg import GeneIdStore
 
-def add_shortname_column(input_filepath, output_filepath, gidstore: GeneIdStore):
+def add_shortname_column(input_filepath:str, output_filepath:str, gidstore: GeneIdStore):
     """
     Reads a CSV file, adds a 'shortname' column, 
      If a field starts with 'https://monarchinitiative.org/', translate it to a short gene name and add
@@ -56,8 +56,8 @@ def add_shortname_column(input_filepath, output_filepath, gidstore: GeneIdStore)
 # read a csv file with several columns and loop over the results
 if __name__ == "__main__":
     # take filename from command line argument
-    if len(sys.argv) != 2:
-        print("Usage: python script.py <csvfilename>")
+    if len(sys.argv) < 2:
+        print("Usage: python add_gene_shortname.py <csvfilename>")
         sys.exit(1)
 
     # this is a local class that reads a JSON file from HGNC that holds the gene ID mappings

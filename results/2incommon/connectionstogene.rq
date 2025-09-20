@@ -1,0 +1,34 @@
+# identify the PMIDs connected to this gene
+REFIX pmid: <https://pubmed.ncbi.nlm.nih.gov/>
+PREFIX EDAM: <http://edamontology.org/>
+PREFIX BIOLINK: <https://w3id.org/biolink/vocab/>
+PREFIX ENSEMBL: <http://identifiers.org/ensembl/>
+PREFIX NCBIGENE: <http://identifiers.org/ncbigene/>
+PREFIX monarch: <https://monarchinitiative.org/>
+# Select the source information for the gene
+SELECT DISTINCT ?pmid_uri ?dataset ?row
+
+WHERE {
+  # What gene?
+  VALUES ?gene_identifier { monarch:HGNC:1078 } 
+
+  {
+    ?row BIOLINK:symbol ?gene_identifier .
+  }
+  UNION
+  {
+    ?row ENSEMBL:id ?gene_identifier .
+  }
+  UNION
+  {
+    ?row NCBIGENE:id ?gene_identifier .
+  }
+  UNION
+  {
+    ?row BIOLINK:Gene ?gene_uri .
+    FILTER(STRENDS(STR(?gene_uri), ?gene_identifier))
+  }
+
+  ?dataset EDAM:has_output ?row .
+  ?pmid_uri EDAM:has_output ?dataset .
+}

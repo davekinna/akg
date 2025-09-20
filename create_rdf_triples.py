@@ -4,6 +4,7 @@ import rdflib
 from rdflib import Namespace, URIRef, Literal
 import sys
 import os
+import io
 from rdflib.namespace import XSD
 import uuid
 import json
@@ -168,8 +169,20 @@ def process_regular_csv(csv_file_path:str, matched_genes, unmatched_genes, graph
         # Loop through the rest of the file to process data rows
         rowIndex = 0
         for i, line in enumerate(csvfile):
-            data_fields = line.strip().strip('"').split(',')
-            
+#            data_fields = line.strip().strip('"').split(',')
+# attempt 3 to get this robust. The header line is working so just use csv_reader to get the data lines.
+            # Use io.StringIO to treat the string like a file
+            line_as_file = io.StringIO(line)
+
+            # The csv.reader does all the hard work for you
+            csv_reader = csv.reader(line_as_file)
+
+            # The reader returns rows, so we loop (it will only loop once for a single line)
+            data_fields = []
+            for row in csv_reader:
+                data_fields = row
+                break            
+
             # Ensure the row has enough columns before we try to access our index
             n_fields = len(data_fields)
             m_index = max(gene_index, pval_index, lfc_index)
