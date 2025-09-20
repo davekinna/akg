@@ -1,0 +1,12 @@
+geneIdentifier,logFoldChange,pValue
+https://monarchinitiative.org/HGNC:16142,3.154305941,2.06e-149
+BC040733,3.000790827,2.15e-29
+https://monarchinitiative.org/HGNC:24822,2.83301343344385,3.98769364693717e-62
+https://monarchinitiative.org/HGNC:16155,2.785484554,6.61e-48
+https://monarchinitiative.org/HGNC:29576,2.7497335,3.69e-56
+BC040700,2.69749872,2.37e-17
+https://monarchinitiative.org/HGNC:25420,2.6750822361374,4.16089096317224e-65
+https://monarchinitiative.org/HGNC:20753,2.60907437415787,3.38268075696075e-58
+https://monarchinitiative.org/HGNC:16838,2.58938552852585,6.26389232809516e-97
+https://monarchinitiative.org/HGNC:6914,2.54442640458582,8.38453023441374e-45
+C2orf18,2.507667326,1.72e-96

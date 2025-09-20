@@ -9,8 +9,8 @@ import xlrd
 import csv
 import re
 import argparse
-from akg import AKGException, akg_logging_config
-from tracking import create_tracking, load_tracking, save_tracking, create_empty_tracking_store, add_to_tracking, tracking_entry
+from akg import AKGException, akg_logging_config, possible_lfc_names
+from tracking import check_tracking_writeable, create_tracking, load_tracking, save_tracking, create_empty_tracking_store, add_to_tracking, tracking_entry
 import sys
 
 
@@ -38,16 +38,30 @@ def process_csv_file(file_path:str, skip_rows:int=0, pval_name:str='', gene_name
     file_name = os.path.splitext(os.path.basename(file_path))[0]
     # Try reading with different settings
     for encoding in ['utf-8', 'iso-8859-1', 'latin1']:
-        for delim in ['\t', ',', ';']:  # prioritize tab
-            try:
-                # this is the only point where the skip at the start of the file is made
-                # after this stage, the column headers are assumed to be on the first line.
-                df = pd.read_csv(file_path, delimiter=delim, encoding=encoding, on_bad_lines='warn', skiprows=skip_rows)
-                if not df.empty:
-                    new_file = process_dataframe(df, file_name, output_dir, file_path, input_delimiter=delim, skip_rows=skip_rows, pval_name=pval_name, gene_name=gene_name, lfc_name=lfc_name)
-                    return add_to_tracking(tdf, new_file)
-            except Exception as e:
-                logging.error(f"Failed to read {file_path} with delimiter '{delim}' and encoding '{encoding}': {str(e)}")
+        # remove tab stuff and see if python can detect the file on its own
+        try:
+            # *this is the only point where the skip at the start of the file is made*
+            # after this stage, the column headers are assumed to be on the first line.
+            df = pd.read_csv(file_path, delimiter=None, engine='python', encoding=encoding, on_bad_lines='warn', skiprows=skip_rows)
+            if len(df.columns) <= 1:
+                logging.warning('pd.read_csv detected 1 column only. This is unlikely.')
+            if not df.empty:
+#                new_file = process_dataframe(df, file_name, output_dir, file_path, input_delimiter=delim, skip_rows=skip_rows, pval_name=pval_name, gene_name=gene_name, lfc_name=lfc_name)
+                new_file = process_dataframe(df, file_name, output_dir, file_path, input_delimiter=None, skip_rows=skip_rows, pval_name=pval_name, gene_name=gene_name, lfc_name=lfc_name)
+                return add_to_tracking(tdf, new_file)
+        except Exception as e:
+            logging.error(f"Failed to read {file_path} with encoding '{encoding}': {str(e)}")
+#            logging.error(f"Failed to read {file_path} with delimiter '{delim}' and encoding '{encoding}': {str(e)}")
+        # for delim in ['\t', ',', ';']:  # prioritize tab
+        #     try:
+        #         # *this is the only point where the skip at the start of the file is made*
+        #         # after this stage, the column headers are assumed to be on the first line.
+        #         df = pd.read_csv(file_path, delimiter=delim, encoding=encoding, on_bad_lines='warn', skiprows=skip_rows)
+        #         if not df.empty:
+        #             new_file = process_dataframe(df, file_name, output_dir, file_path, input_delimiter=delim, skip_rows=skip_rows, pval_name=pval_name, gene_name=gene_name, lfc_name=lfc_name)
+        #             return add_to_tracking(tdf, new_file)
+        #     except Exception as e:
+        #         logging.error(f"Failed to read {file_path} with delimiter '{delim}' and encoding '{encoding}': {str(e)}")
 
     # If all attempts fail, try reading as plain text
     try:
@@ -66,16 +80,12 @@ def test_lfc_search():
     """
     col = "Relevance of circQTLs to ASD"
     log_fold_col = ''
-    if any(phrase in re.sub(r'[_\s-]', '', col.lower()) for phrase in ['logfoldchange', 'logfold', 'logfold2', 'lf', 
-                                                                        'expression', 'enrichment', 'logfc', 'foldchange', 'fc', 
-                                                                        'log2', 'lf2', 'lfc', 'log2fc', 'log', 'fold']):
+    if any(phrase in re.sub(r'[_\s-]', '', col.lower()) for phrase in possible_lfc_names):
         log_fold_col = col
 
     sqcol = re.sub(r'[_\s-]', '', col.lower())
     print(sqcol)
-    for phrase in ['logfoldchange', 'logfold', 'logfold2', 'lf', 
-                   'expression', 'enrichment', 'logfc', 'foldchange', 'fc', 
-                   'log2', 'lf2', 'lfc', 'log2fc', 'log', 'fold']:
+    for phrase in possible_lfc_names:
         print(f'{phrase}:{sqcol.find(phrase)}\n')
     assert log_fold_col
     print(f'log_fold_col:{log_fold_col}')
@@ -91,9 +101,7 @@ def process_dataframe(df:pd.DataFrame, sheet_name:str, output_dir:str, file_path
     df.columns = df.columns.astype(str)
     log_fold_col = None
     for col in df.columns:
-        if any(phrase in re.sub(r'[_\s-]', '', col.lower()) for phrase in ['logfoldchange', 'logfold', 'logfold2', 'lf', 
-                                                                           'expression', 'enrichment', 'logfc', 'foldchange', 'fc', 
-                                                                           'log2', 'lf2', 'lfc', 'log2fc', 'log', 'fold']):
+        if any(phrase in re.sub(r'[_\s-]', '', col.lower()) for phrase in possible_lfc_names):
             log_fold_col = col
             break
     # save the file as .csv but ONLY if a log fold column is found or nominated through the input 
@@ -130,11 +138,12 @@ def process_dataframe(df:pd.DataFrame, sheet_name:str, output_dir:str, file_path
             original_filename = os.path.splitext(os.path.basename(file_path))[0]
             new_filename = f"{new_filestub}_{original_filename}.csv"
             output_file = os.path.join(output_dir, new_filename)
-
-        if input_delimiter == '\t':
-            df.to_csv(output_file, index=False, sep=',')
-        else:
-            df.to_csv(output_file, index=False)
+        # the if statement is redundant
+        # if input_delimiter == '\t':
+        #     df.to_csv(output_file, index=False, sep=',')
+        # else:
+        #     df.to_csv(output_file, index=False)
+        df.to_csv(output_file, index=False)
         logging.info(f"Saved {sheet_name} as CSV: {output_file}")
 
         # assume the pmid is the last component of the output dir
@@ -157,8 +166,7 @@ def process_supp_data_folder(data_folder:str, tracking_file_path:str):
 
     Parameters:
         data_folder:str
-        article_file_path:str   # must be a full path
-        check_only:bool         # check LFC column and record its name in the tracking file under lfc.
+        tracking_file_path:str   # must be a full path
 
     Returns:
         None
@@ -183,10 +191,10 @@ def process_supp_data_folder(data_folder:str, tracking_file_path:str):
             logging.info(f"Processing file: {file_path}")
             if filename.lower().endswith(('.csv')):
                 local_tdf = process_csv_file(file_path, skip_rows=row['skip'], pval_name=row['pval'], gene_name=row['gene'], lfc_name=row['lfc'])
+                tdf = add_to_tracking(tdf,local_tdf)
             else:
                 logging.info(f'Skipping file: {file_path}, should be a .csv file ')
                 continue
-            tdf = add_to_tracking(tdf,local_tdf)
     logging.info(f'Finished processing files in {data_folder}, found {len(tdf)} new files to add to tracking')
 
     # now the loop has finished add the accumulated tracking info into the main one
@@ -203,7 +211,7 @@ if __name__ == '__main__':
     # manage the command line options
     parser = argparse.ArgumentParser(description='Convert downloaded supplementary data to graph precursor')
     parser.add_argument('-i','--input_dir', default='data', help='Destination top-level directory for input data files (output files also written here)')
-    parser.add_argument('-t','--tracking_file', default='akg_tracking.xlsx', help='Tracking file name. This file is created in the top-level directory.')
+    parser.add_argument('-t','--tracking_file', default='akg_tracking.xlsx', help='Tracking file name. This file must exist in the top-level directory.')
     parser.add_argument('-l', '--log', default='data_convert.log', help='Log file name. This file is created in the top-level directory.')
 
     # argparse populates an object using parse_args
@@ -212,8 +220,6 @@ if __name__ == '__main__':
 
     main_dir = config['input_dir']
 
-    check_only = config['check_only']
-
     if not os.path.isdir(main_dir):
         raise AKGException(f"data_convert: data directory {main_dir} must exist") 
 
@@ -221,13 +227,17 @@ if __name__ == '__main__':
     logging.info(f'Starting data_convert in {main_dir}')
     logging.info(f"Program executed with command: {command_line_str}")
 
-    # create the tracking file    
+    # load the tracking file    
     tracking_file = config['tracking_file']
+    tracking_file = os.path.join(main_dir, tracking_file)
     if not os.path.exists(tracking_file):
         raise AKGException(f"create_rdf_triples: {tracking_file} must exist")
+    else:
+        if not check_tracking_writeable(tracking_file):
+            logging.error(f"create_rdf_triples: {tracking_file} must be writable: close it in Excel and try again")
+            raise AKGException(f"create_rdf_triples: {tracking_file} must be writable: close it in Excel and try again")
 
     logging.info(f'Processing directory {os.path.realpath(main_dir)}')
-    tracking_file = os.path.join(main_dir, tracking_file)
 
     log_file = config['log']
     log_file = os.path.join(main_dir, log_file)

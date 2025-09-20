@@ -1,0 +1,38 @@
+PREFIX pmid: <https://pubmed.ncbi.nlm.nih.gov/>
+PREFIX EDAM: <http://edamontology.org/>
+PREFIX BIOLINK: <https://w3id.org/biolink/vocab/>
+PREFIX ENSEMBL: <http://identifiers.org/ensembl/>
+PREFIX NCBIGENE: <http://identifiers.org/ncbigene/>
+PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+
+# subquery needed to filter out wrongly formed data in live model for 28485729 
+SELECT ?geneIdentifier ?logFoldChange ?pValue
+WHERE {
+    FILTER(isNumeric(?logFoldChange) && isNumeric(?pValue) && BOUND(?geneIdentifier))
+    
+    # && ?pValue < 0.05)
+    # && ?logFoldChange > 0.2)
+
+    {
+        SELECT ?geneIdentifier ?logFoldChange ?pValue
+        WHERE {
+            VALUES ?pmid_uri { pmid:28485729 }
+
+            ?pmid_uri EDAM:has_output ?dataset .
+            ?dataset EDAM:has_output ?row .
+
+            # Use OPTIONAL for data that might be missing
+            OPTIONAL { ?row EDAM:data_1669 ?pValue . }
+            OPTIONAL { ?row EDAM:data_3754 ?logFoldChange . }
+
+            # Find the gene identifier
+            OPTIONAL { ?row BIOLINK:Gene ?geneURI . }
+            OPTIONAL { ?row ENSEMBL:id ?geneENS . }
+            OPTIONAL { ?row NCBIGENE:id ?geneNCBI . }
+            OPTIONAL { ?row BIOLINK:symbol ?geneSYM . }
+
+            BIND(COALESCE(?geneURI, ?geneENS, ?geneNCBI, ?geneSYM) AS ?geneIdentifier)
+        }
+    }
+}
+ORDER BY DESC(ABS(?logFoldChange))

@@ -14,7 +14,7 @@ import csv
 import re
 import argparse
 from akg import AKGException, akg_logging_config
-from tracking import create_tracking, load_tracking, save_tracking, create_empty_tracking_store, add_to_tracking, tracking_entry
+from tracking import check_tracking_writeable, create_tracking, load_tracking, save_tracking, create_empty_tracking_store, add_to_tracking, tracking_entry
 import sys
 
 def process_excel_file(file_path)->pd.DataFrame:
@@ -241,6 +241,10 @@ if __name__ == '__main__':
 
     if not os.path.exists(tracking_file):
         create_tracking(main_dir, tracking_file)
+    else:
+        if not check_tracking_writeable(tracking_file):
+            logging.error(f"csv_data_cleaning: {tracking_file} must be writable: close it in Excel and try again")
+            raise AKGException(f"csv_data_cleaning: {tracking_file} must be writable: close it in Excel and try again")
 
     supp_data_folder = os.path.join(main_dir,"supp_data")
     process_supp_data_folder(supp_data_folder, tracking_file)

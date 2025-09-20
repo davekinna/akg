@@ -8,7 +8,7 @@ import json
 import argparse
 from akg import AKGException, akg_logging_config
 import logging
-from tracking import load_tracking, save_tracking
+from tracking import check_tracking_writeable, load_tracking, save_tracking
 import sys 
 
 # Load environment variables from .env file
@@ -80,9 +80,10 @@ def genai_check(filename:str)->Tuple[bool,str]:
     5. "pval": the name of the column containing p-values.
     6. "gene": the name of the column containing gene names.
     
-    Does this file contain autism or ASD gene expression data with each row holding a gene name, a pvalue, and a log fold change? 
+    Does this file contain autism or ASD gene expression data with each row holding an individual gene name, a pvalue, and a log fold change? 
     These don't have to be the only columns present, but they must be included. They can come in any order, and the file will have a header row.
-    
+    Set "answer" to 'false' if you see example data where the cells in the gene column contain multiple identifiers, but don't let this influence your decision if you don't see such examples.
+
     --- CSV CONTENT START ---
     {csv_data}
     --- CSV CONTENT END ---
@@ -167,6 +168,10 @@ if __name__ == "__main__":
         tracking_file = os.path.join(main_dir, tracking_file)
         if not os.path.exists(tracking_file):
             raise AKGException(f'No tracking file {tracking_file}, cannot track results or determine which files to process')
+        else:
+            if not check_tracking_writeable(tracking_file):
+                logging.error(f"csv_data_cleaning: {tracking_file} must be writable: close it in Excel and try again")
+                raise AKGException(f"csv_data_cleaning: {tracking_file} must be writable: close it in Excel and try again")
 
         # loop over all the files identified by the tracking file and process them
         df = load_tracking(tracking_file)
