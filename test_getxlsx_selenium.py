@@ -8,7 +8,7 @@ from selenium.webdriver.common.by import By
 from urllib.parse import urljoin
 
 # Setup
-email = "dkinna01@student.bbk.ac.uk"
+email = "user@domain.com"
 csv_file = "./data/asd_article_metadata.csv"
 output_folder = "supp_data_sel"
 log_file = "supplementary_download_log_sel.csv"

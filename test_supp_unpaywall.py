@@ -5,7 +5,7 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 
 # Setup
-email = "dkinna01@student.bbk.ac.uk"
+email = "user@domain.com"
 doi_file = "./data/asd_article_metadata.csv"
 doi_column=5
 output_folder = "supp_data_from_test"

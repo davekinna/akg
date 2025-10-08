@@ -5,7 +5,7 @@ import os
 # Load CSV
 df = pd.read_csv("data/asd_article_metadata.csv")
 
-email = "dkinna01@student.bbk.ac.uk"
+email = "email@domain.com"
 
 # Extract DOIs from column 5 (index 4)
 doi_list = df.iloc[:, 4].dropna().unique()
