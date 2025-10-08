@@ -2,7 +2,7 @@ import requests
 # unpaywall goes from doi to pdf
 doi = "10.1016/j.neuron.2015.11.025"
 #doi = "10.1016/j.cell.2015.06.034"  # Replace with your article's DOI
-email = "dkinna01@student.bbk.ac.uk"    # Optional but recommended
+email = "user@domain.com"    # Optional but recommended
 url = f"https://api.unpaywall.org/v2/{doi}?email={email}"
 headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
