@@ -49,7 +49,7 @@ you can supply an alternative with the '-t' command line option.
 python akg\processing.py -d -i <top_level>
 ```
 This will scan asd_article_metadata.csv for the non-excluded files, and download supplementary data for them. The data files are output to <top_level>/supp_data.  The next level of directories under supp_data is named by the numeric pubmed ID value. 
-So, the files are/should be downloaded to <top_level>/supp_data/<PMID>.
+So, the files are/should be downloaded to <top_level>/supp_data/\<PMID\>.
 
 Excluding downloaded data at this point based on PMID can be achieved by deleting it or moving it to a different location. The subsequent steps only work on files under the given top level directory.
 
