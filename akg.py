@@ -93,8 +93,12 @@ def akg_logging_config(filename:str):
     Invoking through 'logging' uses the singleton instance of the logging module, so it is not necessary to pass the logger around, 
     and the same log file will be found by logging calls in other functions once akg_logging_config has been called during that 
     run of the program.
+
+    Note this uses force=True that will clobber previous invocations within this run of the program.
+    Introduced because Entrez makes an import that logs using the same package.
     """
-    logging.basicConfig(level=logging.INFO, filename=filename, filemode='a',
+
+    logging.basicConfig(level=logging.INFO, filename=filename, filemode='a', force=True, 
                         format='%(asctime)s - %(levelname)s - %(message)s')
     logging.info("AKG logging started")
 

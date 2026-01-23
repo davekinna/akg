@@ -1,6 +1,8 @@
 #This file searches the Entrez database for relevant papers, retrieves their DOIs metadata, obtains a pdf 
 # of the original paper, and all supporting data xlsx files
 
+import logging
+
 from Bio import Entrez
 from dotenv import load_dotenv
 
@@ -8,7 +10,6 @@ from dotenv import load_dotenv
 import os
 import argparse
 import sys
-import logging
 from bs4 import BeautifulSoup,  SoupStrainer
 import requests
 from urllib.request import urlopen, urlretrieve
