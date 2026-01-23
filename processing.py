@@ -408,7 +408,7 @@ def main():
         parser.add_argument('-f','--pdf', action='store_true', help="Download the articles as PDFs if available")
         parser.add_argument('-p','--pmid', default='', help="Operate only for this PMID")
         parser.add_argument('-d','--download', action='store_true', help="Download the supplementary data if available")
-        parser.add_argument('-e','--email', help='email address to supply to NCBI and Unpaywall')
+        parser.add_argument('-e','--email', help='email address to supply to NCBI and Unpaywall',default='')
         parser.add_argument('-l','--log', default='processing.log', help='Log file name. This file is created in the top-level directory')
 
         # argparse populates an object using parse_args
