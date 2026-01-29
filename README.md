@@ -51,6 +51,15 @@ python akg/processing.py -d -i <top_level>
 This will scan asd_article_metadata.csv for the non-excluded files, and download supplementary data for them. The data files are output to <top_level>/supp_data.  The next level of directories under supp_data is named by the numeric pubmed ID value. 
 So, the files are/should be downloaded to <top_level>/supp_data/\<PMID\>.
 
+NOTE: simple direct download code no longer works because of (not unreasonable) bot protection on the server side. At the moment processing.py writes out a script (download.sh) that is run after processing.py, and sends messages to your live interactive browser session requesting that it visit the relevant page. To make this work, after running:
+```
+python akg/processing.py -d -i <top_level>
+```
+run the following (or equivalent for your system after fixing the path to the browser executable used in download.sh):
+```
+sh -v <top_level>/download.sh
+```
+
 Excluding downloaded data at this point based on PMID can be achieved by deleting it or moving it to a different location. The subsequent steps only work on files under the given top level directory.
 
 As an alternative, to just go through the process for one publication, provide its PMID on the command line:
