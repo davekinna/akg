@@ -66,8 +66,9 @@ def genai_check(filename:str)->Tuple[bool,str]:
     # TODO: retry using gemini-2.0-flash as prompted in 
     # https://cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions
     #
+    # original (thesis) model was gemini-1.5-flash
     model = genai.GenerativeModel(
-        'gemini-1.5-flash',
+        'gemini-2.0-flash',
         generation_config=generation_config
     )
     # Create the prompt, providing both the instructions and the file content
