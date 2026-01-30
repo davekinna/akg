@@ -29,7 +29,7 @@ if not GOOGLE_API_KEY:
 
 genai.configure(api_key=GOOGLE_API_KEY)
 
-def genai_check(filename:str)->Tuple[bool,str]:
+def genai_check(filename:str)->Tuple[bool,str,int,float,float,str]:
     """Check (using generative AI model) if the file is of the type we require
     for our study. See prompt_template below for the exact details.
 
@@ -124,7 +124,7 @@ def genai_check(filename:str)->Tuple[bool,str]:
         print(f"Error parsing the model's response: {e}")
         print(f"Raw response: {response.text}")
 
-    return False, "File format not supported"
+    return False, "File format not supported", 0, 0.0, 0.0, ""
 
 if __name__ == "__main__":
 
@@ -149,9 +149,9 @@ if __name__ == "__main__":
     if one_file:
         filename = one_file
 
-        is_valid, explanation = genai_check(filename)
+        is_valid, explanation, skip_rows, lfc, pval, gene = genai_check(filename)
         if is_valid:
-            print(f"File '{filename}' is of the required type.")
+            print(f"File '{filename}' is of the required type. \nrows to skip:'{filename}' \nlfc column:'{lfc}' \npval column:'{pval}' \ngene column:'{gene}'")
         else:
             print(f"File '{filename}' is not of the required type.")
         print(f"Explanation: {explanation}")
