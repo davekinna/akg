@@ -82,7 +82,7 @@ python akg/genai_check.py -i <top_level>
 This needs to be run after data_split.py has been run. It looks for the derived dataset file names (with name split_*) and updates the value in column 'suitable' of the tracking file with TRUE if it judges the given file to be of further use, and puts its reasoning (whatever the outcome) in column 'suitablereason'.  
 You will need a Google Gemini API key for this, in file .env in the python source directory.
 
-If you judge that the AI check has been giving a good selection, you can use the -e argument to set the values in the 'excl' column to the same as those in the AI choice (see step 4 below):
+If you judge that the AI check has been giving a good selection, you can use the -e argument to set the values in the 'excl' column to the same as those in the AI choice:
 ```
 python akg/genai_check.py -e -i <top_level>
 ```
