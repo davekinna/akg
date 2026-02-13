@@ -111,7 +111,7 @@ if __name__ == '__main__':
     main_dir = config['input_dir']
 
     if not os.path.isdir(main_dir):
-        raise AKGException(f"data_convert: data directory {main_dir} must exist")
+        raise AKGException(f"csv_data_cleaning: data directory {main_dir} must exist")
     
     # set up logging
     akg_logging_config( os.path.join(main_dir, config['log']))
