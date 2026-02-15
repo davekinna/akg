@@ -7,18 +7,22 @@ Displays files where step=1 and suitable=TRUE with associated metadata
 import os
 import sys
 import argparse
+from typing import Any, Dict
 import pandas as pd
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QListWidget, QListWidgetItem, QTextEdit, 
                              QLabel, QPushButton, QGridLayout, QTableWidget, 
                              QTableWidgetItem, QHeaderView, QSplitter, QSpinBox, 
-                             QCheckBox)
+                             QCheckBox, QComboBox, QMessageBox)
 from PyQt5.QtCore import Qt, QSize
 from PyQt5.QtGui import QFont, QColor
 
 
 # Single-point config: maximum display width for table cells (in characters)
 MAX_DISPLAY_CELL_CHARS = 20
+
+# Single-point config: maximum visible characters for full-path display
+MAX_FULL_PATH_DISPLAY_CHARS = 80
 
 
 def load_tracking_file(filename: str = 'akg_tracking.xlsx') -> pd.DataFrame:
@@ -94,6 +98,12 @@ def read_csv_as_dataframe(file_path: str, num_rows: int = 20) -> pd.DataFrame:
 
 class ReviewCheckWindow(QMainWindow):
     """Main window for the review check application"""
+    pending_gene_choices: Dict[int, str]
+    pending_pval_choices: Dict[int, str]
+    pending_lfc_choices: Dict[int, str]
+    initial_row_values: Dict[int, Dict[str, Any]]
+    saved_row_values: Dict[int, Dict[str, Any]]
+    has_unsaved_changes: bool
     
     def __init__(self, tracking_df: pd.DataFrame, tracking_file: str, input_dir: str = 'data'):
         super().__init__()
@@ -111,6 +121,29 @@ class ReviewCheckWindow(QMainWindow):
             raise ValueError('No entries found with step=1, suitable=TRUE, and excl=FALSE')
         
         self.current_index = 0
+        self.pending_gene_choices = {}  # type: Dict[int, str]
+        self.pending_pval_choices = {}  # type: Dict[int, str]
+        self.pending_lfc_choices = {}  # type: Dict[int, str]
+        self.initial_row_values = {}
+        self.saved_row_values = {}
+        self.has_unsaved_changes = False
+
+        for idx, row in self.filtered.iterrows():
+            idx_int = int(idx)
+            row_values = {
+                'skip': int(row['skip']) if pd.notna(row['skip']) else 0,
+                'gene': str(row['gene']).strip() if pd.notna(row['gene']) else '',
+                'pval': str(row['pval']).strip() if pd.notna(row['pval']) else '',
+                'lfc': str(row['lfc']).strip() if pd.notna(row['lfc']) else '',
+                'excl': bool(row['excl']) if pd.notna(row['excl']) else False
+            }
+            self.initial_row_values[idx_int] = {
+                'skip': row_values['skip'],
+                'gene': row_values['gene'],
+                'pval': row_values['pval'],
+                'lfc': row_values['lfc']
+            }
+            self.saved_row_values[idx_int] = row_values
         
         # Set window properties
         self.setWindowTitle('Review Check')
@@ -152,7 +185,7 @@ class ReviewCheckWindow(QMainWindow):
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.addWidget(QLabel('Files:'))
+        left_layout.addWidget(QLabel('Files to review:'))
         
         self.file_list = QListWidget()
         self.file_list.itemSelectionChanged.connect(self.on_file_selected)
@@ -193,33 +226,57 @@ class ReviewCheckWindow(QMainWindow):
         self.skip_spinbox.valueChanged.connect(self.on_skip_changed)
         metadata_layout.addWidget(self.skip_spinbox, 0, 1)
         
-        self.pval_header_label = QLabel('P-value:')
-        metadata_layout.addWidget(self.pval_header_label, 0, 2)
-        self.pval_label = QLabel('')
-        metadata_layout.addWidget(self.pval_label, 0, 3)
-        
         # Exclude checkbox
-        self.excl_checkbox = QCheckBox('Exclude this file')
-        metadata_layout.addWidget(self.excl_checkbox, 0, 4, 1, 2)
+        self.excl_checkbox = QCheckBox('Exclude this file from subsequent reviews')
+        self.excl_checkbox.stateChanged.connect(self.on_excl_changed)
+        metadata_layout.addWidget(self.excl_checkbox, 0, 3, 1, 2, Qt.AlignmentFlag.AlignRight)
         
         self.gene_header_label = QLabel('Gene:')
         metadata_layout.addWidget(self.gene_header_label, 1, 0)
         self.gene_label = QLabel('')
         metadata_layout.addWidget(self.gene_label, 1, 1)
+
+        self.gene_choice_header_label = QLabel('Gene column:')
+        metadata_layout.addWidget(self.gene_choice_header_label, 1, 3)
+        self.gene_choice_combo = QComboBox()
+        self.gene_choice_combo.currentIndexChanged.connect(self.on_gene_choice_changed)
+        metadata_layout.addWidget(self.gene_choice_combo, 1, 4)
+
+        self.pval_header_label = QLabel('P-value:')
+        metadata_layout.addWidget(self.pval_header_label, 2, 0)
+        self.pval_label = QLabel('')
+        metadata_layout.addWidget(self.pval_label, 2, 1)
+
+        self.pval_choice_header_label = QLabel('P-value column:')
+        metadata_layout.addWidget(self.pval_choice_header_label, 2, 3)
+        self.pval_choice_combo = QComboBox()
+        self.pval_choice_combo.currentIndexChanged.connect(self.on_pval_choice_changed)
+        metadata_layout.addWidget(self.pval_choice_combo, 2, 4)
         
         self.lfc_header_label = QLabel('Log FC:')
-        metadata_layout.addWidget(self.lfc_header_label, 1, 2)
+        metadata_layout.addWidget(self.lfc_header_label, 3, 0)
         self.lfc_label = QLabel('')
-        metadata_layout.addWidget(self.lfc_label, 1, 3)
+        metadata_layout.addWidget(self.lfc_label, 3, 1)
+
+        self.lfc_choice_header_label = QLabel('Log FC column:')
+        metadata_layout.addWidget(self.lfc_choice_header_label, 3, 3)
+        self.lfc_choice_combo = QComboBox()
+        self.lfc_choice_combo.currentIndexChanged.connect(self.on_lfc_choice_changed)
+        metadata_layout.addWidget(self.lfc_choice_combo, 3, 4)
+
+        metadata_layout.setHorizontalSpacing(16)
         
         right_layout.addLayout(metadata_layout)
         
         # Full path
-        right_layout.addWidget(QLabel('Full path:'))
+        path_layout = QHBoxLayout()
+        path_layout.addWidget(QLabel('Full path:'))
         self.path_label = QLabel('')
-        self.path_label.setWordWrap(True)
+        self.path_label.setWordWrap(False)
         self.path_label.setFont(QFont('Courier', 8))
-        right_layout.addWidget(self.path_label)
+        path_layout.addWidget(self.path_label)
+        path_layout.addStretch()
+        right_layout.addLayout(path_layout)
         
         splitter.addWidget(right_widget)
         
@@ -239,14 +296,18 @@ class ReviewCheckWindow(QMainWindow):
         next_button = QPushButton('Next')
         next_button.clicked.connect(self.on_next)
         button_layout.addWidget(next_button)
+
+        reset_button = QPushButton('Reset Fields')
+        reset_button.clicked.connect(self.on_reset_fields)
+        button_layout.addWidget(reset_button)
         
         save_button = QPushButton('Save Changes')
-        save_button.clicked.connect(self.on_save)
+        save_button.clicked.connect(self.on_save_clicked)
         save_button.setStyleSheet('background-color: #4CAF50; color: white; font-weight: bold;')
         button_layout.addWidget(save_button)
         
-        exit_button = QPushButton('Exit')
-        exit_button.clicked.connect(self.close)
+        exit_button = QPushButton('Close')
+        exit_button.clicked.connect(self.on_close_clicked)
         button_layout.addWidget(exit_button)
         
         main_layout.addLayout(button_layout)
@@ -269,9 +330,12 @@ class ReviewCheckWindow(QMainWindow):
         else:
             skip_value = int(row['skip']) if pd.notna(row['skip']) else 0
         
-        gene_col = str(row['gene']).strip() if pd.notna(row['gene']) else ''
-        pval_col = str(row['pval']).strip() if pd.notna(row['pval']) else ''
-        lfc_col = str(row['lfc']).strip() if pd.notna(row['lfc']) else ''
+        row_gene_col = str(row['gene']).strip() if pd.notna(row['gene']) else ''
+        gene_col = self.pending_gene_choices.get(idx, row_gene_col)
+        row_pval_col = str(row['pval']).strip() if pd.notna(row['pval']) else ''
+        pval_col = self.pending_pval_choices.get(idx, row_pval_col)
+        row_lfc_col = str(row['lfc']).strip() if pd.notna(row['lfc']) else ''
+        lfc_col = self.pending_lfc_choices.get(idx, row_lfc_col)
         
         # Read file as DataFrame if CSV, otherwise show raw text
         df = read_csv_as_dataframe(full_path, 20)
@@ -280,6 +344,9 @@ class ReviewCheckWindow(QMainWindow):
         gene_found = False
         pval_found = False
         lfc_found = False
+        gene_count = 0
+        pval_count = 0
+        lfc_count = 0
         
         if df is not None:
             # Display as table
@@ -293,6 +360,52 @@ class ReviewCheckWindow(QMainWindow):
             header_row = None
             if 0 <= skip_value < len(df):
                 header_row = df.iloc[skip_value].astype(str).str.strip()
+
+            if header_row is not None:
+                header_values = header_row.tolist()
+                if gene_col:
+                    gene_count = sum(1 for value in header_values if value == gene_col)
+                    gene_found = gene_count == 1
+                if pval_col:
+                    pval_count = sum(1 for value in header_values if value == pval_col)
+                    pval_found = pval_count == 1
+                if lfc_col:
+                    lfc_count = sum(1 for value in header_values if value == lfc_col)
+                    lfc_found = lfc_count == 1
+
+            # Populate gene column choices from the highlighted header row
+            self.gene_choice_combo.blockSignals(True)
+            self.gene_choice_combo.clear()
+            self.gene_choice_combo.addItem('')
+
+            self.pval_choice_combo.blockSignals(True)
+            self.pval_choice_combo.clear()
+            self.pval_choice_combo.addItem('')
+
+            self.lfc_choice_combo.blockSignals(True)
+            self.lfc_choice_combo.clear()
+            self.lfc_choice_combo.addItem('')
+
+            if header_row is not None:
+                seen = set()
+                for value in header_row.tolist():
+                    value = str(value).strip()
+                    if value and value not in seen:
+                        seen.add(value)
+                        self.gene_choice_combo.addItem(value)
+                        self.pval_choice_combo.addItem(value)
+                        self.lfc_choice_combo.addItem(value)
+
+            combo_gene_choice = gene_col if gene_col in [self.gene_choice_combo.itemText(i) for i in range(self.gene_choice_combo.count())] else ''
+            self.gene_choice_combo.setCurrentText(combo_gene_choice)
+            combo_pval_choice = pval_col if pval_col in [self.pval_choice_combo.itemText(i) for i in range(self.pval_choice_combo.count())] else ''
+            self.pval_choice_combo.setCurrentText(combo_pval_choice)
+            combo_lfc_choice = lfc_col if lfc_col in [self.lfc_choice_combo.itemText(i) for i in range(self.lfc_choice_combo.count())] else ''
+            self.lfc_choice_combo.setCurrentText(combo_lfc_choice)
+
+            self.gene_choice_combo.blockSignals(False)
+            self.pval_choice_combo.blockSignals(False)
+            self.lfc_choice_combo.blockSignals(False)
             
             for i in range(len(df)):
                 for j in range(len(df.columns)):
@@ -305,15 +418,19 @@ class ReviewCheckWindow(QMainWindow):
                         
                         # Check if this cell matches gene/pval/lfc columns
                         cell_stripped = cell_value.strip()
+                        match_colors = []
                         if gene_col and cell_stripped == gene_col:
-                            item.setBackground(QColor(144, 238, 144))  # Light green
-                            gene_found = True
-                        elif pval_col and cell_stripped == pval_col:
-                            item.setBackground(QColor(144, 238, 144))  # Light green
-                            pval_found = True
-                        elif lfc_col and cell_stripped == lfc_col:
-                            item.setBackground(QColor(144, 238, 144))  # Light green
-                            lfc_found = True
+                            match_colors.append(QColor(144, 238, 144) if gene_count == 1 else QColor(255, 182, 182))
+                        if pval_col and cell_stripped == pval_col:
+                            match_colors.append(QColor(144, 238, 144) if pval_count == 1 else QColor(255, 182, 182))
+                        if lfc_col and cell_stripped == lfc_col:
+                            match_colors.append(QColor(144, 238, 144) if lfc_count == 1 else QColor(255, 182, 182))
+
+                        if match_colors:
+                            if any(color == QColor(255, 182, 182) for color in match_colors):
+                                item.setBackground(QColor(255, 182, 182))  # Light red
+                            else:
+                                item.setBackground(QColor(144, 238, 144))  # Light green
                     
                     self.preview_table.setItem(i, j, item)
             
@@ -330,6 +447,21 @@ class ReviewCheckWindow(QMainWindow):
             item = QTableWidgetItem(preview_text)
             self.preview_table.setItem(0, 0, item)
             self.cap_preview_column_widths()
+
+            self.gene_choice_combo.blockSignals(True)
+            self.gene_choice_combo.clear()
+            self.gene_choice_combo.addItem('')
+            self.gene_choice_combo.blockSignals(False)
+
+            self.pval_choice_combo.blockSignals(True)
+            self.pval_choice_combo.clear()
+            self.pval_choice_combo.addItem('')
+            self.pval_choice_combo.blockSignals(False)
+
+            self.lfc_choice_combo.blockSignals(True)
+            self.lfc_choice_combo.clear()
+            self.lfc_choice_combo.addItem('')
+            self.lfc_choice_combo.blockSignals(False)
         
         # Update metadata widgets with color coding
         if not use_spinbox_value:
@@ -340,10 +472,12 @@ class ReviewCheckWindow(QMainWindow):
         
         # Update exclude checkbox
         excl_value = bool(row['excl']) if pd.notna(row['excl']) else False
+        self.excl_checkbox.blockSignals(True)
         self.excl_checkbox.setChecked(excl_value)
+        self.excl_checkbox.blockSignals(False)
         
         # Gene field
-        self.gene_label.setText(gene_col)
+        self.gene_label.setText(self.format_occurrence_display(gene_col, gene_count))
         if gene_col:
             if gene_found:
                 self.gene_header_label.setStyleSheet('color: green; font-weight: bold;')
@@ -352,11 +486,11 @@ class ReviewCheckWindow(QMainWindow):
                 self.gene_header_label.setStyleSheet('color: red; font-weight: bold;')
                 self.gene_label.setStyleSheet('color: red; font-weight: bold;')
         else:
-            self.gene_header_label.setStyleSheet('')
-            self.gene_label.setStyleSheet('')
+            self.gene_header_label.setStyleSheet('color: red; font-weight: bold;')
+            self.gene_label.setStyleSheet('color: red; font-weight: bold;')
         
         # P-value field
-        self.pval_label.setText(pval_col)
+        self.pval_label.setText(self.format_occurrence_display(pval_col, pval_count))
         if pval_col:
             if pval_found:
                 self.pval_header_label.setStyleSheet('color: green; font-weight: bold;')
@@ -365,11 +499,11 @@ class ReviewCheckWindow(QMainWindow):
                 self.pval_header_label.setStyleSheet('color: red; font-weight: bold;')
                 self.pval_label.setStyleSheet('color: red; font-weight: bold;')
         else:
-            self.pval_header_label.setStyleSheet('')
-            self.pval_label.setStyleSheet('')
+            self.pval_header_label.setStyleSheet('color: red; font-weight: bold;')
+            self.pval_label.setStyleSheet('color: red; font-weight: bold;')
         
         # Log FC field
-        self.lfc_label.setText(lfc_col)
+        self.lfc_label.setText(self.format_occurrence_display(lfc_col, lfc_count))
         if lfc_col:
             if lfc_found:
                 self.lfc_header_label.setStyleSheet('color: green; font-weight: bold;')
@@ -378,14 +512,77 @@ class ReviewCheckWindow(QMainWindow):
                 self.lfc_header_label.setStyleSheet('color: red; font-weight: bold;')
                 self.lfc_label.setStyleSheet('color: red; font-weight: bold;')
         else:
-            self.lfc_header_label.setStyleSheet('')
-            self.lfc_label.setStyleSheet('')
+            self.lfc_header_label.setStyleSheet('color: red; font-weight: bold;')
+            self.lfc_label.setStyleSheet('color: red; font-weight: bold;')
         
-        self.path_label.setText(full_path)
+        self.path_label.setText(self.truncate_path_display(full_path))
+        self.path_label.setToolTip(full_path)
+        self.update_dirty_state()
     
     def on_skip_changed(self, value):
         """Handle skip value change - update display live"""
         self.update_display(self.current_index, use_spinbox_value=True)
+
+    def on_gene_choice_changed(self, _index):
+        """Handle user changing gene column choice from dropdown."""
+        selected_gene = self.gene_choice_combo.currentText().strip()
+        self.pending_gene_choices[self.current_index] = selected_gene
+        self.update_display(self.current_index, use_spinbox_value=True)
+
+    def on_pval_choice_changed(self, _index):
+        """Handle user changing p-value column choice from dropdown."""
+        selected_pval = self.pval_choice_combo.currentText().strip()
+        self.pending_pval_choices[self.current_index] = selected_pval
+        self.update_display(self.current_index, use_spinbox_value=True)
+
+    def on_lfc_choice_changed(self, _index):
+        """Handle user changing log FC column choice from dropdown."""
+        selected_lfc = self.lfc_choice_combo.currentText().strip()
+        self.pending_lfc_choices[self.current_index] = selected_lfc
+        self.update_display(self.current_index, use_spinbox_value=True)
+
+    def on_excl_changed(self, _state):
+        """Track unsaved changes when exclude checkbox is changed."""
+        self.update_dirty_state()
+
+    def update_dirty_state(self):
+        """Recompute dirty state from current values vs last saved values."""
+        dirty = False
+
+        saved_current = self.saved_row_values.get(self.current_index, {})
+        current_skip = int(self.skip_spinbox.value())
+        current_excl = bool(self.excl_checkbox.isChecked())
+        current_gene = self.gene_choice_combo.currentText().strip()
+        current_pval = self.pval_choice_combo.currentText().strip()
+        current_lfc = self.lfc_choice_combo.currentText().strip()
+
+        if current_skip != int(saved_current.get('skip', current_skip)):
+            dirty = True
+        if current_excl != bool(saved_current.get('excl', current_excl)):
+            dirty = True
+        if current_gene != str(saved_current.get('gene', current_gene)):
+            dirty = True
+        if current_pval != str(saved_current.get('pval', current_pval)):
+            dirty = True
+        if current_lfc != str(saved_current.get('lfc', current_lfc)):
+            dirty = True
+
+        for pending_map, field_name in (
+            (self.pending_gene_choices, 'gene'),
+            (self.pending_pval_choices, 'pval'),
+            (self.pending_lfc_choices, 'lfc'),
+        ):
+            to_remove = []
+            for idx, value in list(pending_map.items()):
+                saved_value = str(self.saved_row_values.get(int(idx), {}).get(field_name, ''))
+                if value == saved_value:
+                    to_remove.append(idx)
+                else:
+                    dirty = True
+            for idx in to_remove:
+                pending_map.pop(idx, None)
+
+        self.has_unsaved_changes = dirty
 
     def cap_preview_column_widths(self):
         """Cap preview table column widths to a configurable max character width."""
@@ -399,6 +596,28 @@ class ReviewCheckWindow(QMainWindow):
             current_width = self.preview_table.columnWidth(col)
             if current_width > max_width_px:
                 self.preview_table.setColumnWidth(col, max_width_px)
+
+    def truncate_path_display(self, full_path: str) -> str:
+        """Truncate file path for one-line display while preserving start/end context."""
+        if len(full_path) <= MAX_FULL_PATH_DISPLAY_CHARS:
+            return full_path
+
+        if MAX_FULL_PATH_DISPLAY_CHARS <= 3:
+            return '...'
+
+        left_len = (MAX_FULL_PATH_DISPLAY_CHARS - 3) // 2
+        right_len = MAX_FULL_PATH_DISPLAY_CHARS - 3 - left_len
+        return f"{full_path[:left_len]}...{full_path[-right_len:]}"
+
+    def format_occurrence_display(self, value: str, count: int) -> str:
+        """Format metadata value with duplicate occurrence note when needed."""
+        if not value:
+            return ''
+        if count <= 1:
+            return value
+        if count == 2:
+            return f"{value} (occurs twice)"
+        return f"{value} (occurs {count} times)"
     
     def on_file_selected(self):
         """Handle file list selection"""
@@ -406,8 +625,8 @@ class ReviewCheckWindow(QMainWindow):
         if current_item >= 0:
             self.update_display(current_item)
     
-    def on_save(self):
-        """Save the modified skip value back to the tracking file"""
+    def on_save(self, show_success_dialog: bool = True) -> bool:
+        """Save the modified values back to the tracking file."""
         try:
             # Get the original index in the unfiltered dataframe
             current_row = self.filtered.iloc[self.current_index]
@@ -417,9 +636,33 @@ class ReviewCheckWindow(QMainWindow):
                 (self.tracking_df['file'] == current_row['file'])
             ].index[0]
             
-            # Update the skip and excl values in the tracking dataframe
+            # Update the skip, excl, gene, pval, and lfc values in the tracking dataframe
             self.tracking_df.loc[original_idx, 'skip'] = self.skip_spinbox.value()
             self.tracking_df.loc[original_idx, 'excl'] = self.excl_checkbox.isChecked()
+            selected_gene = self.gene_choice_combo.currentText().strip()
+            selected_pval = self.pval_choice_combo.currentText().strip()
+            selected_lfc = self.lfc_choice_combo.currentText().strip()
+            self.tracking_df.loc[original_idx, 'gene'] = selected_gene
+            self.tracking_df.loc[original_idx, 'pval'] = selected_pval
+            self.tracking_df.loc[original_idx, 'lfc'] = selected_lfc
+
+            # Keep filtered copy in sync for in-session navigation
+            self.filtered.loc[self.current_index, 'skip'] = self.skip_spinbox.value()
+            self.filtered.loc[self.current_index, 'excl'] = self.excl_checkbox.isChecked()
+            self.filtered.loc[self.current_index, 'gene'] = selected_gene
+            self.filtered.loc[self.current_index, 'pval'] = selected_pval
+            self.filtered.loc[self.current_index, 'lfc'] = selected_lfc
+            self.pending_gene_choices[self.current_index] = selected_gene
+            self.pending_pval_choices[self.current_index] = selected_pval
+            self.pending_lfc_choices[self.current_index] = selected_lfc
+
+            self.saved_row_values[self.current_index] = {
+                'skip': int(self.skip_spinbox.value()),
+                'excl': bool(self.excl_checkbox.isChecked()),
+                'gene': selected_gene,
+                'pval': selected_pval,
+                'lfc': selected_lfc
+            }
             
             # Save the tracking file
             if self.tracking_file.endswith('.xlsx'):
@@ -433,12 +676,76 @@ class ReviewCheckWindow(QMainWindow):
             # Show confirmation
             from PyQt5.QtWidgets import QMessageBox
             excl_status = 'EXCLUDED' if self.excl_checkbox.isChecked() else 'included'
-            QMessageBox.information(self, 'Success', 
-                f'Saved: skip={self.skip_spinbox.value()}, excl={excl_status}')
+            if show_success_dialog:
+                QMessageBox.information(self, 'Success', 
+                    f'Saved: skip={self.skip_spinbox.value()}, excl={excl_status}, '
+                    f'gene={selected_gene or "(blank)"}, pval={selected_pval or "(blank)"}, '
+                    f'lfc={selected_lfc or "(blank)"}')
+            self.update_dirty_state()
+            return True
             
         except Exception as e:
-            from PyQt5.QtWidgets import QMessageBox
             QMessageBox.critical(self, 'Error', f'Failed to save: {e}')
+            return False
+
+    def on_save_clicked(self):
+        """Handle Save Changes button click."""
+        self.on_save()
+
+    def on_close_clicked(self):
+        """Handle Close button click."""
+        self.close()
+
+    def on_reset_fields(self):
+        """Reset skip, gene, pval, and lfc to initial values loaded for current file."""
+        confirm = QMessageBox.question(
+            self,
+            'Confirm Reset',
+            'Reset skip, gene, pval, and lfc to initial loaded values for this file?',
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if confirm != QMessageBox.Yes:
+            return
+
+        initial = self.initial_row_values.get(self.current_index, None)
+        if initial is None:
+            return
+
+        self.pending_gene_choices[self.current_index] = initial['gene']
+        self.pending_pval_choices[self.current_index] = initial['pval']
+        self.pending_lfc_choices[self.current_index] = initial['lfc']
+
+        self.skip_spinbox.blockSignals(True)
+        self.skip_spinbox.setValue(int(initial['skip']))
+        self.skip_spinbox.blockSignals(False)
+
+        self.update_display(self.current_index, use_spinbox_value=True)
+
+    def closeEvent(self, event):
+        """Prompt before closing when there are unsaved changes."""
+        if not self.has_unsaved_changes:
+            event.accept()
+            return
+
+        reply = QMessageBox.warning(
+            self,
+            'Unsaved Changes',
+            'You have unsaved changes. Save before exiting?',
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+            QMessageBox.Save
+        )
+
+        if reply == QMessageBox.Save:
+            save_ok = self.on_save(show_success_dialog=False)
+            if save_ok:
+                event.accept()
+            else:
+                event.ignore()
+        elif reply == QMessageBox.Discard:
+            event.accept()
+        else:
+            event.ignore()
     
     
     
