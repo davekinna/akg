@@ -17,6 +17,10 @@ from PyQt5.QtCore import Qt, QSize
 from PyQt5.QtGui import QFont, QColor
 
 
+# Single-point config: maximum display width for table cells (in characters)
+MAX_DISPLAY_CELL_CHARS = 20
+
+
 def load_tracking_file(filename: str = 'akg_tracking.xlsx') -> pd.DataFrame:
     """
     Load tracking file - supports both .xlsx and .csv formats
@@ -313,8 +317,9 @@ class ReviewCheckWindow(QMainWindow):
                     
                     self.preview_table.setItem(i, j, item)
             
-            # Auto-resize columns to content
+            # Auto-resize columns to content, then cap to max character width
             self.preview_table.resizeColumnsToContents()
+            self.cap_preview_column_widths()
         else:
             # Not a CSV, show raw text preview
             self.preview_table.clear()
@@ -324,6 +329,7 @@ class ReviewCheckWindow(QMainWindow):
             preview_text = read_file_preview(full_path, 20)
             item = QTableWidgetItem(preview_text)
             self.preview_table.setItem(0, 0, item)
+            self.cap_preview_column_widths()
         
         # Update metadata widgets with color coding
         if not use_spinbox_value:
@@ -380,6 +386,19 @@ class ReviewCheckWindow(QMainWindow):
     def on_skip_changed(self, value):
         """Handle skip value change - update display live"""
         self.update_display(self.current_index, use_spinbox_value=True)
+
+    def cap_preview_column_widths(self):
+        """Cap preview table column widths to a configurable max character width."""
+        if self.preview_table.columnCount() == 0:
+            return
+
+        char_width = self.preview_table.fontMetrics().horizontalAdvance('M')
+        max_width_px = (char_width * MAX_DISPLAY_CELL_CHARS) + 16
+
+        for col in range(self.preview_table.columnCount()):
+            current_width = self.preview_table.columnWidth(col)
+            if current_width > max_width_px:
+                self.preview_table.setColumnWidth(col, max_width_px)
     
     def on_file_selected(self):
         """Handle file list selection"""
