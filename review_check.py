@@ -8,29 +8,34 @@ import os
 import sys
 import argparse
 import json
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 import pandas as pd
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                             QHBoxLayout, QListWidget, QListWidgetItem, QTextEdit, 
+                             QHBoxLayout, QListWidget, QTextEdit, 
                              QLabel, QPushButton, QGridLayout, QTableWidget, 
-                             QTableWidgetItem, QHeaderView, QSplitter, QSpinBox, 
-                             QCheckBox, QComboBox, QMessageBox)
-from PyQt5.QtCore import Qt, QSize
+                             QTableWidgetItem, QHeaderView, QSpinBox, 
+                             QCheckBox, QComboBox, QMessageBox, QStyle, QLineEdit)
+from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont, QColor
 
 
-# Single-point config: maximum display width for table cells (in characters)
+# Preview/table display
 MAX_DISPLAY_CELL_CHARS = 20
+DEFAULT_PREVIEW_VISIBLE_ROWS = 10
+PREVIEW_EXTRA_PADDING_PX = 36
 
-# Single-point config: maximum visible characters for full-path display
-MAX_FULL_PATH_DISPLAY_CHARS = 80
-
-# Single-point config: abstract preview size in metadata panel
+# Article panel display
 ABSTRACT_PREVIEW_MAX_LINES = 5
 ABSTRACT_PREVIEW_MAX_CHARS = 1200
 ABSTRACT_COLLAPSED_HEIGHT = 110
 ABSTRACT_EXPANDED_HEIGHT = 260
+
+# Persisted settings
 SETTINGS_FILENAME = 'review_check_settings.json'
+
+# Field status styles
+FIELD_STYLE_OK = 'color: green; font-weight: bold;'
+FIELD_STYLE_ERR = 'color: red; font-weight: bold;'
 
 
 def load_tracking_file(filename: str = 'akg_tracking.xlsx') -> pd.DataFrame:
@@ -80,7 +85,7 @@ def read_file_preview(file_path: str, num_lines: int = 10) -> str:
         return f"Error reading file: {e}"
 
 
-def read_csv_as_dataframe(file_path: str, num_rows: int = 20) -> pd.DataFrame:
+def read_csv_as_dataframe(file_path: str, num_rows: int = 20) -> Optional[pd.DataFrame]:
     """
     Read CSV file as pandas DataFrame
     
@@ -89,7 +94,7 @@ def read_csv_as_dataframe(file_path: str, num_rows: int = 20) -> pd.DataFrame:
         num_rows: int - number of rows to read
         
     Returns:
-        pd.DataFrame - the data, or None if error/not CSV
+        Optional[pd.DataFrame] - the data, or None if error/not CSV
     """
     try:
         if file_path.endswith('.csv') or file_path.endswith('.tsv'):
@@ -182,12 +187,14 @@ class ReviewCheckWindow(QMainWindow):
     pending_gene_choices: Dict[int, str]
     pending_pval_choices: Dict[int, str]
     pending_lfc_choices: Dict[int, str]
+    pending_reason_values: Dict[int, str]
     initial_row_values: Dict[int, Dict[str, Any]]
     saved_row_values: Dict[int, Dict[str, Any]]
     article_metadata_by_pmid: Dict[str, Dict[str, str]]
     article_metadata_file: str
     article_metadata_status_message: str
     settings_file: str
+    preview_visible_rows: int
     current_article_abstract_text: str
     article_abstract_expanded: bool
     has_unsaved_changes: bool
@@ -206,6 +213,22 @@ class ReviewCheckWindow(QMainWindow):
         self.current_article_abstract_text = ''
         ui_settings = load_ui_settings(self.settings_file)
         self.article_abstract_expanded = bool(ui_settings.get('article_abstract_expanded', False))
+        preview_rows_raw = ui_settings.get('preview_visible_rows', DEFAULT_PREVIEW_VISIBLE_ROWS)
+        try:
+            self.preview_visible_rows = int(preview_rows_raw)
+        except (TypeError, ValueError):
+            self.preview_visible_rows = DEFAULT_PREVIEW_VISIBLE_ROWS
+        self.preview_visible_rows = max(3, min(50, self.preview_visible_rows))
+
+        settings_updated = False
+        if ui_settings.get('preview_visible_rows') != self.preview_visible_rows:
+            ui_settings['preview_visible_rows'] = self.preview_visible_rows
+            settings_updated = True
+        if 'article_abstract_expanded' not in ui_settings:
+            ui_settings['article_abstract_expanded'] = self.article_abstract_expanded
+            settings_updated = True
+        if settings_updated:
+            save_ui_settings(self.settings_file, ui_settings)
         
         # Filter data
         self.filtered = tracking_df[(tracking_df['step'] == 1) & 
@@ -219,9 +242,15 @@ class ReviewCheckWindow(QMainWindow):
         self.pending_gene_choices = {}  # type: Dict[int, str]
         self.pending_pval_choices = {}  # type: Dict[int, str]
         self.pending_lfc_choices = {}  # type: Dict[int, str]
+        self.pending_reason_values = {}  # type: Dict[int, str]
         self.initial_row_values = {}
         self.saved_row_values = {}
         self.has_unsaved_changes = False
+
+        if 'manualreason' not in self.tracking_df.columns:
+            self.tracking_df['manualreason'] = ''
+        if 'manual' not in self.tracking_df.columns:
+            self.tracking_df['manual'] = False
 
         for idx_int in range(len(self.filtered)):
             row = self.filtered.iloc[idx_int]
@@ -230,7 +259,8 @@ class ReviewCheckWindow(QMainWindow):
                 'gene': str(row['gene']).strip() if pd.notna(row['gene']) else '',
                 'pval': str(row['pval']).strip() if pd.notna(row['pval']) else '',
                 'lfc': str(row['lfc']).strip() if pd.notna(row['lfc']) else '',
-                'excl': bool(row['excl']) if pd.notna(row['excl']) else False
+                'excl': bool(row['excl']) if pd.notna(row['excl']) else False,
+                'manualreason': str(row.get('manualreason', '')).strip() if pd.notna(row.get('manualreason', '')) else ''
             }
             self.initial_row_values[idx_int] = {
                 'skip': row_values['skip'],
@@ -242,7 +272,7 @@ class ReviewCheckWindow(QMainWindow):
         
         # Set window properties
         self.setWindowTitle('Review Check')
-        self.setGeometry(100, 100, 1200, 800)
+        self.setGeometry(100, 100, 1200, 900)
         
         # Create central widget and main layout
         central_widget = QWidget()
@@ -317,14 +347,17 @@ class ReviewCheckWindow(QMainWindow):
 
         main_layout.addWidget(article_panel)
         
-        # Main content with splitter for resizable panels
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        # Main content grid: left file list, top-right preview, bottom-right metadata
+        content_layout = QGridLayout()
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setHorizontalSpacing(8)
+        content_layout.setVerticalSpacing(8)
         
         # Left side: file list widget
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.addWidget(QLabel('Files to review:'))
+        left_layout.addWidget(QLabel('Supplementary files to review:'))
         
         self.file_list = QListWidget()
         self.file_list.itemSelectionChanged.connect(self.on_file_selected)
@@ -336,25 +369,33 @@ class ReviewCheckWindow(QMainWindow):
             self.file_list.addItem(item_text)
         
         left_layout.addWidget(self.file_list)
-        splitter.addWidget(left_widget)
+        content_layout.addWidget(left_widget, 0, 0, 2, 1)
         
-        # Right side: preview and metadata widget
-        right_widget = QWidget()
-        right_layout = QVBoxLayout(right_widget)
-        right_layout.setContentsMargins(0, 0, 0, 0)
+        # Top-right: preview widget
+        preview_widget = QWidget()
+        preview_layout = QVBoxLayout(preview_widget)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
         
         # Preview section
-        right_layout.addWidget(QLabel('File Preview (first 20 rows):'))
+        self.preview_header_label = QLabel('Preview (first 20 rows) of:')
+        self.preview_header_label.setWordWrap(False)
+        preview_layout.addWidget(self.preview_header_label)
         self.preview_table = QTableWidget()
         self.preview_table.setEditTriggers(QTableWidget.NoEditTriggers)  # Read-only
-        self.preview_table.horizontalHeader().setStretchLastSection(True)
+        preview_header = self.preview_table.horizontalHeader()
+        if isinstance(preview_header, QHeaderView):
+            preview_header.setStretchLastSection(True)
         self.preview_table.setAlternatingRowColors(True)
-        right_layout.addWidget(self.preview_table)
-        
-        # Metadata section
-        right_layout.addWidget(QLabel('Metadata:'))
+        preview_layout.addWidget(self.preview_table)
+        content_layout.addWidget(preview_widget, 0, 1)
+
+        # Bottom-right: metadata widget
+        metadata_widget = QWidget()
+        metadata_widget_layout = QVBoxLayout(metadata_widget)
+        metadata_widget_layout.setContentsMargins(0, 0, 0, 0)
         
         metadata_layout = QGridLayout()
+        metadata_layout.setContentsMargins(0, 6, 0, 0)
         
         # Skip field (editable with spinbox)
         skip_header_label = QLabel('Skip:')
@@ -364,11 +405,6 @@ class ReviewCheckWindow(QMainWindow):
         self.skip_spinbox.setMaximum(10000)
         self.skip_spinbox.valueChanged.connect(self.on_skip_changed)
         metadata_layout.addWidget(self.skip_spinbox, 0, 1)
-        
-        # Exclude checkbox
-        self.excl_checkbox = QCheckBox('Exclude this file from subsequent reviews')
-        self.excl_checkbox.stateChanged.connect(self.on_excl_changed)
-        metadata_layout.addWidget(self.excl_checkbox, 0, 3, 1, 2, Qt.AlignmentFlag.AlignRight)
         
         self.gene_header_label = QLabel('Gene:')
         metadata_layout.addWidget(self.gene_header_label, 1, 0)
@@ -403,26 +439,28 @@ class ReviewCheckWindow(QMainWindow):
         self.lfc_choice_combo.currentIndexChanged.connect(self.on_lfc_choice_changed)
         metadata_layout.addWidget(self.lfc_choice_combo, 3, 4)
 
+        # Bottom row controls
+        self.excl_checkbox = QCheckBox('Exclude this file from subsequent reviews')
+        self.excl_checkbox.stateChanged.connect(self.on_excl_changed)
+        metadata_layout.addWidget(self.excl_checkbox, 4, 0, 1, 2, Qt.AlignmentFlag.AlignLeft)
+
+        self.reason_header_label = QLabel('Exclude reason:')
+        metadata_layout.addWidget(self.reason_header_label, 4, 3)
+        self.reason_input = QLineEdit()
+        self.reason_input.textChanged.connect(self.on_reason_changed)
+        metadata_layout.addWidget(self.reason_input, 4, 4)
+
         metadata_layout.setHorizontalSpacing(16)
         
-        right_layout.addLayout(metadata_layout)
-        
-        # Full path
-        path_layout = QHBoxLayout()
-        path_layout.addWidget(QLabel('Full path:'))
-        self.path_label = QLabel('')
-        self.path_label.setWordWrap(False)
-        self.path_label.setFont(QFont('Courier', 8))
-        path_layout.addWidget(self.path_label)
-        path_layout.addStretch()
-        right_layout.addLayout(path_layout)
-        
-        splitter.addWidget(right_widget)
-        
-        # Set initial splitter sizes (30% left, 70% right)
-        splitter.setSizes([300, 900])
-        
-        main_layout.addWidget(splitter)
+        metadata_widget_layout.addLayout(metadata_layout)
+        content_layout.addWidget(metadata_widget, 1, 1)
+
+        content_layout.setColumnStretch(0, 3)
+        content_layout.setColumnStretch(1, 7)
+        content_layout.setRowStretch(0, 1)
+        content_layout.setRowStretch(1, 0)
+
+        main_layout.addLayout(content_layout)
         
         # Navigation and Save buttons
         button_layout = QHBoxLayout()
@@ -454,6 +492,7 @@ class ReviewCheckWindow(QMainWindow):
         # Load initial display
         self.update_display(0)
         self.file_list.setCurrentRow(0)
+        self.adjust_initial_window_size()
     
     def update_display(self, idx: int, use_spinbox_value: bool = False):
         """Update all display fields for the given index"""
@@ -577,6 +616,7 @@ class ReviewCheckWindow(QMainWindow):
             # Auto-resize columns to content, then cap to max character width
             self.preview_table.resizeColumnsToContents()
             self.cap_preview_column_widths()
+            self.adjust_preview_table_height()
         else:
             # Not a CSV, show raw text preview
             self.preview_table.clear()
@@ -587,6 +627,7 @@ class ReviewCheckWindow(QMainWindow):
             item = QTableWidgetItem(preview_text)
             self.preview_table.setItem(0, 0, item)
             self.cap_preview_column_widths()
+            self.adjust_preview_table_height()
 
             self.gene_choice_combo.blockSignals(True)
             self.gene_choice_combo.clear()
@@ -615,48 +656,27 @@ class ReviewCheckWindow(QMainWindow):
         self.excl_checkbox.blockSignals(True)
         self.excl_checkbox.setChecked(excl_value)
         self.excl_checkbox.blockSignals(False)
+
+        # Update reason field
+        row_reason = str(row.get('manualreason', '')).strip() if pd.notna(row.get('manualreason', '')) else ''
+        reason_value = self.pending_reason_values.get(idx, row_reason)
+        self.reason_input.blockSignals(True)
+        self.reason_input.setText(reason_value)
+        self.reason_input.blockSignals(False)
         
         # Gene field
         self.gene_label.setText(self.format_occurrence_display(gene_col, gene_count))
-        if gene_col:
-            if gene_found:
-                self.gene_header_label.setStyleSheet('color: green; font-weight: bold;')
-                self.gene_label.setStyleSheet('color: green; font-weight: bold;')
-            else:
-                self.gene_header_label.setStyleSheet('color: red; font-weight: bold;')
-                self.gene_label.setStyleSheet('color: red; font-weight: bold;')
-        else:
-            self.gene_header_label.setStyleSheet('color: red; font-weight: bold;')
-            self.gene_label.setStyleSheet('color: red; font-weight: bold;')
+        self.apply_field_match_style(self.gene_header_label, self.gene_label, gene_col, gene_found)
         
         # P-value field
         self.pval_label.setText(self.format_occurrence_display(pval_col, pval_count))
-        if pval_col:
-            if pval_found:
-                self.pval_header_label.setStyleSheet('color: green; font-weight: bold;')
-                self.pval_label.setStyleSheet('color: green; font-weight: bold;')
-            else:
-                self.pval_header_label.setStyleSheet('color: red; font-weight: bold;')
-                self.pval_label.setStyleSheet('color: red; font-weight: bold;')
-        else:
-            self.pval_header_label.setStyleSheet('color: red; font-weight: bold;')
-            self.pval_label.setStyleSheet('color: red; font-weight: bold;')
+        self.apply_field_match_style(self.pval_header_label, self.pval_label, pval_col, pval_found)
         
         # Log FC field
         self.lfc_label.setText(self.format_occurrence_display(lfc_col, lfc_count))
-        if lfc_col:
-            if lfc_found:
-                self.lfc_header_label.setStyleSheet('color: green; font-weight: bold;')
-                self.lfc_label.setStyleSheet('color: green; font-weight: bold;')
-            else:
-                self.lfc_header_label.setStyleSheet('color: red; font-weight: bold;')
-                self.lfc_label.setStyleSheet('color: red; font-weight: bold;')
-        else:
-            self.lfc_header_label.setStyleSheet('color: red; font-weight: bold;')
-            self.lfc_label.setStyleSheet('color: red; font-weight: bold;')
+        self.apply_field_match_style(self.lfc_header_label, self.lfc_label, lfc_col, lfc_found)
         
-        self.path_label.setText(self.truncate_path_display(full_path))
-        self.path_label.setToolTip(full_path)
+        self.preview_header_label.setText(f'Preview (first 20 rows) of: {full_path}')
         self.update_dirty_state()
     
     def on_skip_changed(self, value):
@@ -685,6 +705,11 @@ class ReviewCheckWindow(QMainWindow):
         """Track unsaved changes when exclude checkbox is changed."""
         self.update_dirty_state()
 
+    def on_reason_changed(self, value):
+        """Track reason text edits for the current row."""
+        self.pending_reason_values[self.current_index] = value.strip()
+        self.update_dirty_state()
+
     def update_dirty_state(self):
         """Recompute dirty state from current values vs last saved values."""
         dirty = False
@@ -695,6 +720,7 @@ class ReviewCheckWindow(QMainWindow):
         current_gene = self.gene_choice_combo.currentText().strip()
         current_pval = self.pval_choice_combo.currentText().strip()
         current_lfc = self.lfc_choice_combo.currentText().strip()
+        current_reason = self.reason_input.text().strip()
 
         if current_skip != int(saved_current.get('skip', current_skip)):
             dirty = True
@@ -706,11 +732,14 @@ class ReviewCheckWindow(QMainWindow):
             dirty = True
         if current_lfc != str(saved_current.get('lfc', current_lfc)):
             dirty = True
+        if current_reason != str(saved_current.get('manualreason', current_reason)):
+            dirty = True
 
         for pending_map, field_name in (
             (self.pending_gene_choices, 'gene'),
             (self.pending_pval_choices, 'pval'),
             (self.pending_lfc_choices, 'lfc'),
+            (self.pending_reason_values, 'manualreason'),
         ):
             to_remove = []
             for idx, value in list(pending_map.items()):
@@ -737,17 +766,46 @@ class ReviewCheckWindow(QMainWindow):
             if current_width > max_width_px:
                 self.preview_table.setColumnWidth(col, max_width_px)
 
-    def truncate_path_display(self, full_path: str) -> str:
-        """Truncate file path for one-line display while preserving start/end context."""
-        if len(full_path) <= MAX_FULL_PATH_DISPLAY_CHARS:
-            return full_path
+    def adjust_preview_table_height(self):
+        """Set preview table height from actual displayed rows and chrome sizes."""
+        row_count = self.preview_table.rowCount()
+        visible_rows = self.preview_visible_rows if row_count <= 0 else min(row_count, self.preview_visible_rows)
 
-        if MAX_FULL_PATH_DISPLAY_CHARS <= 3:
-            return '...'
+        default_row_height = self.preview_table.verticalHeader().defaultSectionSize()
+        font_based_row_height = self.preview_table.fontMetrics().height() + 12
+        row_unit_height = max(default_row_height, font_based_row_height, 24)
+        rows_height = row_unit_height * visible_rows
 
-        left_len = (MAX_FULL_PATH_DISPLAY_CHARS - 3) // 2
-        right_len = MAX_FULL_PATH_DISPLAY_CHARS - 3 - left_len
-        return f"{full_path[:left_len]}...{full_path[-right_len:]}"
+        header = self.preview_table.horizontalHeader()
+        header_height = header.height() if header is not None else 0
+
+        scrollbar_height = self.style().pixelMetric(QStyle.PM_ScrollBarExtent)
+
+        frame_height = self.preview_table.frameWidth() * 2
+        target_height = rows_height + header_height + frame_height + scrollbar_height + PREVIEW_EXTRA_PADDING_PX
+
+        self.preview_table.setMinimumHeight(target_height)
+        self.preview_table.setMaximumHeight(target_height)
+
+    def adjust_initial_window_size(self):
+        """Auto-size window at startup based on rendered layout and screen limits."""
+        QApplication.processEvents()
+
+        central = self.centralWidget()
+        if central is None:
+            return
+
+        hint = central.sizeHint()
+        target_width = max(1250, hint.width() + 60)
+        target_height = max(980, hint.height() + 100)
+
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            target_width = min(target_width, int(available.width() * 0.95))
+            target_height = min(target_height, int(available.height() * 0.95))
+
+        self.resize(target_width, target_height)
 
     def format_occurrence_display(self, value: str, count: int) -> str:
         """Format metadata value with duplicate occurrence note when needed."""
@@ -758,6 +816,12 @@ class ReviewCheckWindow(QMainWindow):
         if count == 2:
             return f"{value} (occurs twice)"
         return f"{value} (occurs {count} times)"
+
+    def apply_field_match_style(self, header_label: QLabel, value_label: QLabel, value: str, found_once: bool):
+        """Apply consistent red/green style for metadata fields based on match status."""
+        style = FIELD_STYLE_OK if value and found_once else FIELD_STYLE_ERR
+        header_label.setStyleSheet(style)
+        value_label.setStyleSheet(style)
 
     def get_article_field(self, article: Dict[str, str], candidate_keys: Tuple[str, ...]) -> str:
         """Get article field value by case-insensitive key matching."""
@@ -879,14 +943,18 @@ class ReviewCheckWindow(QMainWindow):
             ].index[0]
             
             # Update the skip, excl, gene, pval, and lfc values in the tracking dataframe
+            excl_checked = self.excl_checkbox.isChecked()
             self.tracking_df.loc[original_idx, 'skip'] = self.skip_spinbox.value()
-            self.tracking_df.loc[original_idx, 'excl'] = self.excl_checkbox.isChecked()
+            self.tracking_df.loc[original_idx, 'excl'] = excl_checked
             selected_gene = self.gene_choice_combo.currentText().strip()
             selected_pval = self.pval_choice_combo.currentText().strip()
             selected_lfc = self.lfc_choice_combo.currentText().strip()
+            selected_reason = self.reason_input.text().strip()
             self.tracking_df.loc[original_idx, 'gene'] = selected_gene
             self.tracking_df.loc[original_idx, 'pval'] = selected_pval
             self.tracking_df.loc[original_idx, 'lfc'] = selected_lfc
+            self.tracking_df.loc[original_idx, 'manualreason'] = selected_reason
+            self.tracking_df.loc[original_idx, 'manual'] = bool(excl_checked)
 
             # Keep filtered copy in sync for in-session navigation
             self.filtered.loc[self.current_index, 'skip'] = self.skip_spinbox.value()
@@ -894,16 +962,19 @@ class ReviewCheckWindow(QMainWindow):
             self.filtered.loc[self.current_index, 'gene'] = selected_gene
             self.filtered.loc[self.current_index, 'pval'] = selected_pval
             self.filtered.loc[self.current_index, 'lfc'] = selected_lfc
+            self.filtered.loc[self.current_index, 'manualreason'] = selected_reason
             self.pending_gene_choices[self.current_index] = selected_gene
             self.pending_pval_choices[self.current_index] = selected_pval
             self.pending_lfc_choices[self.current_index] = selected_lfc
+            self.pending_reason_values[self.current_index] = selected_reason
 
             self.saved_row_values[self.current_index] = {
                 'skip': int(self.skip_spinbox.value()),
                 'excl': bool(self.excl_checkbox.isChecked()),
                 'gene': selected_gene,
                 'pval': selected_pval,
-                'lfc': selected_lfc
+                'lfc': selected_lfc,
+                'manualreason': selected_reason
             }
             
             # Save the tracking file
@@ -922,7 +993,8 @@ class ReviewCheckWindow(QMainWindow):
                 QMessageBox.information(self, 'Success', 
                     f'Saved: skip={self.skip_spinbox.value()}, excl={excl_status}, '
                     f'gene={selected_gene or "(blank)"}, pval={selected_pval or "(blank)"}, '
-                    f'lfc={selected_lfc or "(blank)"}')
+                    f'lfc={selected_lfc or "(blank)"}, '
+                    f'exclude reason={selected_reason or "(blank)"}')
             self.update_dirty_state()
             return True
             
