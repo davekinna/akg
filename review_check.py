@@ -7,7 +7,8 @@ Displays files where step=1 and suitable=TRUE with associated metadata
 import os
 import sys
 import argparse
-from typing import Any, Dict
+import json
+from typing import Any, Dict, Tuple
 import pandas as pd
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QListWidget, QListWidgetItem, QTextEdit, 
@@ -23,6 +24,13 @@ MAX_DISPLAY_CELL_CHARS = 20
 
 # Single-point config: maximum visible characters for full-path display
 MAX_FULL_PATH_DISPLAY_CHARS = 80
+
+# Single-point config: abstract preview size in metadata panel
+ABSTRACT_PREVIEW_MAX_LINES = 5
+ABSTRACT_PREVIEW_MAX_CHARS = 1200
+ABSTRACT_COLLAPSED_HEIGHT = 110
+ABSTRACT_EXPANDED_HEIGHT = 260
+SETTINGS_FILENAME = 'review_check_settings.json'
 
 
 def load_tracking_file(filename: str = 'akg_tracking.xlsx') -> pd.DataFrame:
@@ -96,6 +104,79 @@ def read_csv_as_dataframe(file_path: str, num_rows: int = 20) -> pd.DataFrame:
         return None
 
 
+def normalize_pmid(value: Any) -> str:
+    """Normalize PMID value to a comparable string key."""
+    if pd.isna(value):
+        return ''
+    pmid = str(value).strip()
+    if pmid.endswith('.0') and pmid[:-2].isdigit():
+        pmid = pmid[:-2]
+    return pmid
+
+
+def load_article_metadata_by_pmid(metadata_file: str) -> Tuple[Dict[str, Dict[str, str]], str]:
+    """Load article metadata CSV into lookup keyed by normalized PMID.
+
+    Returns:
+        (lookup, status_message)
+    """
+    if not os.path.exists(metadata_file):
+        return {}, f'Article metadata file not found: {metadata_file}. Continuing without article metadata.'
+
+    try:
+        metadata_df = pd.read_csv(metadata_file, keep_default_na=False)
+    except Exception as e:
+        return {}, f'Failed to read article metadata file {metadata_file}: {e}. Continuing without article metadata.'
+
+    column_map = {str(col).strip().lower(): col for col in metadata_df.columns}
+
+    pmid_col = None
+    for candidate in ('pmid', 'pubmed_id', 'pubmedid', 'pubmed id'):
+        if candidate in column_map:
+            pmid_col = column_map[candidate]
+            break
+    if pmid_col is None:
+        return {}, f'Article metadata file {metadata_file} is missing a PMID column.'
+
+    lookup: Dict[str, Dict[str, str]] = {}
+    for _, row in metadata_df.iterrows():
+        pmid_key = normalize_pmid(row.get(pmid_col, ''))
+        if not pmid_key:
+            continue
+        row_dict: Dict[str, str] = {}
+        for col in metadata_df.columns:
+            key = str(col).strip()
+            row_dict[key] = str(row.get(col, '')).strip()
+        lookup[pmid_key] = row_dict
+
+    if not lookup:
+        return {}, f'Article metadata file {metadata_file} loaded but no valid PMID rows were found.'
+
+    return lookup, ''
+
+
+def load_ui_settings(settings_file: str) -> Dict[str, Any]:
+    """Load persisted UI settings from JSON file."""
+    if not os.path.exists(settings_file):
+        return {}
+    try:
+        with open(settings_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except Exception as e:
+        print(f"Warning: failed to load UI settings from {settings_file}: {e}")
+        return {}
+
+
+def save_ui_settings(settings_file: str, settings: Dict[str, Any]):
+    """Save UI settings to JSON file."""
+    try:
+        with open(settings_file, 'w', encoding='utf-8') as f:
+            json.dump(settings, f, indent=2)
+    except Exception as e:
+        print(f"Warning: failed to save UI settings to {settings_file}: {e}")
+
+
 class ReviewCheckWindow(QMainWindow):
     """Main window for the review check application"""
     pending_gene_choices: Dict[int, str]
@@ -103,6 +184,12 @@ class ReviewCheckWindow(QMainWindow):
     pending_lfc_choices: Dict[int, str]
     initial_row_values: Dict[int, Dict[str, Any]]
     saved_row_values: Dict[int, Dict[str, Any]]
+    article_metadata_by_pmid: Dict[str, Dict[str, str]]
+    article_metadata_file: str
+    article_metadata_status_message: str
+    settings_file: str
+    current_article_abstract_text: str
+    article_abstract_expanded: bool
     has_unsaved_changes: bool
     
     def __init__(self, tracking_df: pd.DataFrame, tracking_file: str, input_dir: str = 'data'):
@@ -111,6 +198,14 @@ class ReviewCheckWindow(QMainWindow):
         self.tracking_df = tracking_df
         self.tracking_file = tracking_file
         self.input_dir = input_dir
+
+        tracking_dir = os.path.dirname(os.path.abspath(tracking_file)) or '.'
+        self.article_metadata_file = os.path.join(tracking_dir, 'asd_article_metadata.csv')
+        self.settings_file = os.path.join(tracking_dir, SETTINGS_FILENAME)
+        self.article_metadata_by_pmid, self.article_metadata_status_message = load_article_metadata_by_pmid(self.article_metadata_file)
+        self.current_article_abstract_text = ''
+        ui_settings = load_ui_settings(self.settings_file)
+        self.article_abstract_expanded = bool(ui_settings.get('article_abstract_expanded', False))
         
         # Filter data
         self.filtered = tracking_df[(tracking_df['step'] == 1) & 
@@ -128,8 +223,8 @@ class ReviewCheckWindow(QMainWindow):
         self.saved_row_values = {}
         self.has_unsaved_changes = False
 
-        for idx, row in self.filtered.iterrows():
-            idx_int = int(idx)
+        for idx_int in range(len(self.filtered)):
+            row = self.filtered.iloc[idx_int]
             row_values = {
                 'skip': int(row['skip']) if pd.notna(row['skip']) else 0,
                 'gene': str(row['gene']).strip() if pd.notna(row['gene']) else '',
@@ -177,9 +272,53 @@ class ReviewCheckWindow(QMainWindow):
         self.total_label.setContentsMargins(0, 0, 0, 0)
         info_layout.addWidget(self.total_label)
         main_layout.addLayout(info_layout)
+
+        # Article metadata panel (for selected PMID)
+        article_panel = QWidget()
+        article_layout = QGridLayout(article_panel)
+        article_layout.setContentsMargins(0, 0, 0, 0)
+        article_layout.setHorizontalSpacing(8)
+        article_layout.setVerticalSpacing(2)
+
+        article_layout.addWidget(QLabel('PMID:'), 0, 0)
+        self.article_pmid_value_label = QLabel('')
+        self.article_pmid_value_label.setWordWrap(False)
+        article_layout.addWidget(self.article_pmid_value_label, 0, 1)
+
+        article_layout.addWidget(QLabel('Title:'), 1, 0)
+        self.article_title_value_label = QLabel('')
+        self.article_title_value_label.setWordWrap(True)
+        self.article_title_value_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        article_layout.addWidget(self.article_title_value_label, 1, 1)
+
+        article_layout.addWidget(QLabel('Abstract:'), 2, 0, Qt.AlignmentFlag.AlignTop)
+        self.article_abstract_preview = QTextEdit()
+        self.article_abstract_preview.setReadOnly(True)
+        self.article_abstract_preview.setMaximumHeight(ABSTRACT_COLLAPSED_HEIGHT)
+        article_layout.addWidget(self.article_abstract_preview, 2, 1)
+
+        self.toggle_abstract_button = QPushButton('Show more')
+        self.toggle_abstract_button.clicked.connect(self.on_toggle_abstract)
+        article_layout.addWidget(self.toggle_abstract_button, 3, 1, Qt.AlignmentFlag.AlignRight)
+
+        article_layout.addWidget(QLabel('Other metadata:'), 4, 0, Qt.AlignmentFlag.AlignTop)
+        self.article_other_metadata_text = QTextEdit()
+        self.article_other_metadata_text.setReadOnly(True)
+        self.article_other_metadata_text.setMaximumHeight(95)
+        article_layout.addWidget(self.article_other_metadata_text, 4, 1)
+
+        self.article_metadata_status_label = QLabel('')
+        self.article_metadata_status_label.setStyleSheet('color: #b00020;')
+        self.article_metadata_status_label.setWordWrap(True)
+        article_layout.addWidget(self.article_metadata_status_label, 5, 0, 1, 2)
+
+        if self.article_metadata_status_message:
+            self.article_metadata_status_label.setText(self.article_metadata_status_message)
+
+        main_layout.addWidget(article_panel)
         
         # Main content with splitter for resizable panels
-        splitter = QSplitter(Qt.Horizontal)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
         
         # Left side: file list widget
         left_widget = QWidget()
@@ -320,6 +459,7 @@ class ReviewCheckWindow(QMainWindow):
         """Update all display fields for the given index"""
         self.current_index = idx
         row = self.filtered.iloc[idx]
+        self.update_article_metadata_display(row)
         
         # Build full path
         full_path = os.path.join(row['path'], row['file'])
@@ -574,7 +714,7 @@ class ReviewCheckWindow(QMainWindow):
         ):
             to_remove = []
             for idx, value in list(pending_map.items()):
-                saved_value = str(self.saved_row_values.get(int(idx), {}).get(field_name, ''))
+                saved_value = str(self.saved_row_values.get(idx, {}).get(field_name, ''))
                 if value == saved_value:
                     to_remove.append(idx)
                 else:
@@ -618,6 +758,108 @@ class ReviewCheckWindow(QMainWindow):
         if count == 2:
             return f"{value} (occurs twice)"
         return f"{value} (occurs {count} times)"
+
+    def get_article_field(self, article: Dict[str, str], candidate_keys: Tuple[str, ...]) -> str:
+        """Get article field value by case-insensitive key matching."""
+        key_map = {str(key).strip().lower(): key for key in article.keys()}
+        for candidate in candidate_keys:
+            if candidate in key_map:
+                return str(article.get(key_map[candidate], '')).strip()
+        return ''
+
+    def format_other_metadata(self, article: Dict[str, str]) -> str:
+        """Format non-primary article metadata fields for display."""
+        if not article:
+            return '(other metadata not available)'
+
+        excluded = {
+            'pmid', 'pubmed_id', 'pubmedid', 'pubmed id',
+            'title', 'abstract', 'summary',
+            'exclude', 'excl', 'excluded'
+        }
+        lines = []
+        for key, value in article.items():
+            key_clean = str(key).strip()
+            value_clean = str(value).strip()
+            if not key_clean or not value_clean:
+                continue
+            key_lower = key_clean.lower()
+            if key_lower in excluded:
+                continue
+
+            if key_lower == 'journal':
+                display_key = 'Journal'
+            elif key_lower == 'year':
+                display_key = 'Year'
+            elif key_lower == 'doi':
+                display_key = 'DOI'
+            else:
+                display_key = key_clean
+
+            lines.append(f'{display_key}: {value_clean}')
+
+        return '\n'.join(lines) if lines else '(other metadata not available)'
+
+    def format_abstract_preview(self, abstract_text: str) -> str:
+        """Return truncated abstract preview with line/length limits."""
+        if not abstract_text:
+            return ''
+
+        lines = abstract_text.splitlines()
+        was_truncated = False
+        if len(lines) > ABSTRACT_PREVIEW_MAX_LINES:
+            lines = lines[:ABSTRACT_PREVIEW_MAX_LINES]
+            was_truncated = True
+
+        preview = '\n'.join(lines).strip()
+        if len(preview) > ABSTRACT_PREVIEW_MAX_CHARS:
+            preview = preview[:ABSTRACT_PREVIEW_MAX_CHARS].rstrip()
+            was_truncated = True
+
+        if was_truncated and preview:
+            preview = f"{preview}..."
+
+        return preview
+
+    def refresh_article_abstract_display(self):
+        """Refresh abstract text/height based on expanded/collapsed state."""
+        if self.article_abstract_expanded:
+            display_text = self.current_article_abstract_text.strip()
+            self.article_abstract_preview.setMaximumHeight(ABSTRACT_EXPANDED_HEIGHT)
+            self.toggle_abstract_button.setText('Show less')
+            self.article_abstract_preview.setPlainText(display_text if display_text else '(abstract not available)')
+        else:
+            preview = self.format_abstract_preview(self.current_article_abstract_text)
+            self.article_abstract_preview.setMaximumHeight(ABSTRACT_COLLAPSED_HEIGHT)
+            self.toggle_abstract_button.setText('Show more')
+            self.article_abstract_preview.setPlainText(preview if preview else '(abstract not available)')
+
+    def on_toggle_abstract(self):
+        """Toggle abstract panel between compact preview and expanded view."""
+        self.article_abstract_expanded = not self.article_abstract_expanded
+        self.refresh_article_abstract_display()
+        save_ui_settings(self.settings_file, {
+            'article_abstract_expanded': self.article_abstract_expanded
+        })
+
+    def update_article_metadata_display(self, row: pd.Series):
+        """Update top article metadata panel for the selected row."""
+        pmid_value = normalize_pmid(row.get('pmid', ''))
+        self.article_pmid_value_label.setText(pmid_value)
+
+        article = self.article_metadata_by_pmid.get(pmid_value, {})
+        title_text = self.get_article_field(article, ('title',))
+        abstract_text = self.get_article_field(article, ('abstract', 'summary'))
+        self.current_article_abstract_text = abstract_text
+
+        self.article_title_value_label.setText(title_text if title_text else '(title not available)')
+        self.refresh_article_abstract_display()
+        self.article_other_metadata_text.setPlainText(self.format_other_metadata(article))
+
+        if self.article_metadata_status_message:
+            self.article_metadata_status_label.setText(self.article_metadata_status_message)
+        else:
+            self.article_metadata_status_label.setText('')
     
     def on_file_selected(self):
         """Handle file list selection"""
