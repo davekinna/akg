@@ -36,6 +36,11 @@ SETTINGS_FILENAME = 'review_check_settings.json'
 # Field status styles
 FIELD_STYLE_OK = 'color: green; font-weight: bold;'
 FIELD_STYLE_ERR = 'color: red; font-weight: bold;'
+FIELD_STYLE_WARN_LABEL = (
+    'color: #B00020; font-weight: bold; '
+    'background-color: #FDECEA; border: 1px solid #F5C2C7; '
+    'border-radius: 4px; padding: 1px 6px;'
+)
 
 
 def load_tracking_file(filename: str = 'akg_tracking.xlsx') -> pd.DataFrame:
@@ -187,6 +192,7 @@ class ReviewCheckWindow(QMainWindow):
     pending_gene_choices: Dict[int, str]
     pending_pval_choices: Dict[int, str]
     pending_lfc_choices: Dict[int, str]
+    pending_excl_values: Dict[int, bool]
     pending_reason_values: Dict[int, str]
     initial_row_values: Dict[int, Dict[str, Any]]
     saved_row_values: Dict[int, Dict[str, Any]]
@@ -242,6 +248,7 @@ class ReviewCheckWindow(QMainWindow):
         self.pending_gene_choices = {}  # type: Dict[int, str]
         self.pending_pval_choices = {}  # type: Dict[int, str]
         self.pending_lfc_choices = {}  # type: Dict[int, str]
+        self.pending_excl_values = {}  # type: Dict[int, bool]
         self.pending_reason_values = {}  # type: Dict[int, str]
         self.initial_row_values = {}
         self.saved_row_values = {}
@@ -652,7 +659,8 @@ class ReviewCheckWindow(QMainWindow):
             self.skip_spinbox.blockSignals(False)
         
         # Update exclude checkbox
-        excl_value = bool(row['excl']) if pd.notna(row['excl']) else False
+        row_excl_value = bool(row['excl']) if pd.notna(row['excl']) else False
+        excl_value = self.pending_excl_values.get(idx, row_excl_value)
         self.excl_checkbox.blockSignals(True)
         self.excl_checkbox.setChecked(excl_value)
         self.excl_checkbox.blockSignals(False)
@@ -666,15 +674,15 @@ class ReviewCheckWindow(QMainWindow):
         
         # Gene field
         self.gene_label.setText(self.format_occurrence_display(gene_col, gene_count))
-        self.apply_field_match_style(self.gene_header_label, self.gene_label, gene_col, gene_found)
+        self.apply_field_match_style(self.gene_header_label, self.gene_label, 'Gene', gene_col, gene_found, gene_count)
         
         # P-value field
         self.pval_label.setText(self.format_occurrence_display(pval_col, pval_count))
-        self.apply_field_match_style(self.pval_header_label, self.pval_label, pval_col, pval_found)
+        self.apply_field_match_style(self.pval_header_label, self.pval_label, 'P-value', pval_col, pval_found, pval_count)
         
         # Log FC field
         self.lfc_label.setText(self.format_occurrence_display(lfc_col, lfc_count))
-        self.apply_field_match_style(self.lfc_header_label, self.lfc_label, lfc_col, lfc_found)
+        self.apply_field_match_style(self.lfc_header_label, self.lfc_label, 'Log FC', lfc_col, lfc_found, lfc_count)
         
         self.preview_header_label.setText(f'Preview (first 20 rows) of: {full_path}')
         self.update_dirty_state()
@@ -703,6 +711,7 @@ class ReviewCheckWindow(QMainWindow):
 
     def on_excl_changed(self, _state):
         """Track unsaved changes when exclude checkbox is changed."""
+        self.pending_excl_values[self.current_index] = bool(self.excl_checkbox.isChecked())
         self.update_dirty_state()
 
     def on_reason_changed(self, value):
@@ -736,6 +745,7 @@ class ReviewCheckWindow(QMainWindow):
             dirty = True
 
         for pending_map, field_name in (
+            (self.pending_excl_values, 'excl'),
             (self.pending_gene_choices, 'gene'),
             (self.pending_pval_choices, 'pval'),
             (self.pending_lfc_choices, 'lfc'),
@@ -743,7 +753,11 @@ class ReviewCheckWindow(QMainWindow):
         ):
             to_remove = []
             for idx, value in list(pending_map.items()):
-                saved_value = str(self.saved_row_values.get(idx, {}).get(field_name, ''))
+                saved_raw = self.saved_row_values.get(idx, {}).get(field_name, '')
+                if field_name == 'excl':
+                    saved_value = bool(saved_raw)
+                else:
+                    saved_value = str(saved_raw)
                 if value == saved_value:
                     to_remove.append(idx)
                 else:
@@ -808,20 +822,40 @@ class ReviewCheckWindow(QMainWindow):
         self.resize(target_width, target_height)
 
     def format_occurrence_display(self, value: str, count: int) -> str:
-        """Format metadata value with duplicate occurrence note when needed."""
-        if not value:
-            return ''
-        if count <= 1:
-            return value
-        if count == 2:
-            return f"{value} (occurs twice)"
-        return f"{value} (occurs {count} times)"
+        """Return plain metadata value text for display."""
+        return value if value else ''
 
-    def apply_field_match_style(self, header_label: QLabel, value_label: QLabel, value: str, found_once: bool):
-        """Apply consistent red/green style for metadata fields based on match status."""
-        style = FIELD_STYLE_OK if value and found_once else FIELD_STYLE_ERR
-        header_label.setStyleSheet(style)
-        value_label.setStyleSheet(style)
+    def apply_field_match_style(
+        self,
+        header_label: QLabel,
+        value_label: QLabel,
+        base_label: str,
+        value: str,
+        found_once: bool,
+        count: int,
+    ):
+        """Apply status styling + warning text for metadata fields."""
+        if value and found_once:
+            header_label.setText(f'{base_label}:')
+            header_label.setStyleSheet(FIELD_STYLE_OK)
+            header_label.setToolTip('')
+            value_label.setStyleSheet(FIELD_STYLE_OK)
+            return
+
+        if not value:
+            reason_text = 'not specified'
+            tooltip = f'{base_label} is blank in the tracking record.'
+        elif count > 1:
+            reason_text = f'occurs {count} times'
+            tooltip = f'{base_label} was found multiple times in the selected header row.'
+        else:
+            reason_text = 'not found'
+            tooltip = f'{base_label} was not found in the selected header row.'
+
+        header_label.setText(f'⚠ {base_label} ({reason_text}):')
+        header_label.setStyleSheet(FIELD_STYLE_WARN_LABEL)
+        header_label.setToolTip(tooltip)
+        value_label.setStyleSheet(FIELD_STYLE_ERR)
 
     def get_article_field(self, article: Dict[str, str], candidate_keys: Tuple[str, ...]) -> str:
         """Get article field value by case-insensitive key matching."""
@@ -966,6 +1000,7 @@ class ReviewCheckWindow(QMainWindow):
             self.pending_gene_choices[self.current_index] = selected_gene
             self.pending_pval_choices[self.current_index] = selected_pval
             self.pending_lfc_choices[self.current_index] = selected_lfc
+            self.pending_excl_values[self.current_index] = bool(excl_checked)
             self.pending_reason_values[self.current_index] = selected_reason
 
             self.saved_row_values[self.current_index] = {
