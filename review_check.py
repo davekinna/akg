@@ -8,8 +8,11 @@ import os
 import sys
 import argparse
 import json
+import threading
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 import pandas as pd
+import requests
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QListWidget, QTextEdit, 
                              QLabel, QPushButton, QGridLayout, QTableWidget, 
@@ -32,6 +35,9 @@ ABSTRACT_EXPANDED_HEIGHT = 260
 
 # Persisted settings
 SETTINGS_FILENAME = 'review_check_settings.json'
+OA_PDF_CACHE_FILENAME = 'oa_pdf_cache.json'
+OA_PDF_DIRNAME = 'publication_pdfs'
+OA_HTTP_TIMEOUT_SECONDS = 20
 
 # Field status styles
 FIELD_STYLE_OK = 'color: green; font-weight: bold;'
@@ -187,6 +193,29 @@ def save_ui_settings(settings_file: str, settings: Dict[str, Any]):
         print(f"Warning: failed to save UI settings to {settings_file}: {e}")
 
 
+def load_oa_pdf_cache(cache_file: str) -> Dict[str, Dict[str, str]]:
+    """Load cached OA-PDF status by PMID."""
+    if not os.path.exists(cache_file):
+        return {}
+    try:
+        with open(cache_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            if isinstance(data, dict):
+                return data
+    except Exception as e:
+        print(f"Warning: failed to load OA PDF cache from {cache_file}: {e}")
+    return {}
+
+
+def save_oa_pdf_cache(cache_file: str, cache: Dict[str, Dict[str, str]]):
+    """Save OA-PDF cache by PMID."""
+    try:
+        with open(cache_file, 'w', encoding='utf-8') as f:
+            json.dump(cache, f, indent=2)
+    except Exception as e:
+        print(f"Warning: failed to save OA PDF cache to {cache_file}: {e}")
+
+
 class ReviewCheckWindow(QMainWindow):
     """Main window for the review check application"""
     pending_gene_choices: Dict[int, str]
@@ -200,21 +229,35 @@ class ReviewCheckWindow(QMainWindow):
     article_metadata_file: str
     article_metadata_status_message: str
     settings_file: str
+    oa_pdf_cache_file: str
+    oa_pdf_dir: str
+    oa_pdf_cache: Dict[str, Dict[str, str]]
+    unpaywall_email: str
     preview_visible_rows: int
     current_article_abstract_text: str
     article_abstract_expanded: bool
     has_unsaved_changes: bool
     
-    def __init__(self, tracking_df: pd.DataFrame, tracking_file: str, input_dir: str = 'data'):
+    def __init__(
+        self,
+        tracking_df: pd.DataFrame,
+        tracking_file: str,
+        input_dir: str = 'data',
+        unpaywall_email: str = '',
+    ):
         super().__init__()
         
         self.tracking_df = tracking_df
         self.tracking_file = tracking_file
         self.input_dir = input_dir
+        self.unpaywall_email = unpaywall_email.strip() if unpaywall_email else os.environ.get('UNPAYWALL_EMAIL', '').strip()
 
         tracking_dir = os.path.dirname(os.path.abspath(tracking_file)) or '.'
         self.article_metadata_file = os.path.join(tracking_dir, 'asd_article_metadata.csv')
         self.settings_file = os.path.join(tracking_dir, SETTINGS_FILENAME)
+        self.oa_pdf_cache_file = os.path.join(tracking_dir, OA_PDF_CACHE_FILENAME)
+        self.oa_pdf_dir = os.path.join(tracking_dir, OA_PDF_DIRNAME)
+        self.oa_pdf_cache = load_oa_pdf_cache(self.oa_pdf_cache_file)
         self.article_metadata_by_pmid, self.article_metadata_status_message = load_article_metadata_by_pmid(self.article_metadata_file)
         self.current_article_abstract_text = ''
         ui_settings = load_ui_settings(self.settings_file)
@@ -322,6 +365,11 @@ class ReviewCheckWindow(QMainWindow):
         self.article_pmid_value_label.setWordWrap(False)
         article_layout.addWidget(self.article_pmid_value_label, 0, 1)
 
+        article_layout.addWidget(QLabel('PDF availability:'), 0, 2)
+        self.article_pdf_status_label = QLabel('')
+        self.article_pdf_status_label.setWordWrap(False)
+        article_layout.addWidget(self.article_pdf_status_label, 0, 3, Qt.AlignmentFlag.AlignRight)
+
         article_layout.addWidget(QLabel('Title:'), 1, 0)
         self.article_title_value_label = QLabel('')
         self.article_title_value_label.setWordWrap(True)
@@ -351,6 +399,9 @@ class ReviewCheckWindow(QMainWindow):
 
         if self.article_metadata_status_message:
             self.article_metadata_status_label.setText(self.article_metadata_status_message)
+
+        article_layout.setColumnStretch(1, 8)
+        article_layout.setColumnStretch(3, 2)
 
         main_layout.addWidget(article_panel)
         
@@ -462,8 +513,8 @@ class ReviewCheckWindow(QMainWindow):
         metadata_widget_layout.addLayout(metadata_layout)
         content_layout.addWidget(metadata_widget, 1, 1)
 
-        content_layout.setColumnStretch(0, 3)
-        content_layout.setColumnStretch(1, 7)
+        content_layout.setColumnStretch(0, 2)
+        content_layout.setColumnStretch(1, 8)
         content_layout.setRowStretch(0, 1)
         content_layout.setRowStretch(1, 0)
 
@@ -500,6 +551,7 @@ class ReviewCheckWindow(QMainWindow):
         self.update_display(0)
         self.file_list.setCurrentRow(0)
         self.adjust_initial_window_size()
+        self.start_oa_pdf_prefetch()
     
     def update_display(self, idx: int, use_spinbox_value: bool = False):
         """Update all display fields for the given index"""
@@ -821,9 +873,178 @@ class ReviewCheckWindow(QMainWindow):
 
         self.resize(target_width, target_height)
 
+    def start_oa_pdf_prefetch(self):
+        """Start background OA PDF availability check/download for PMIDs in review list."""
+        worker = threading.Thread(target=self.run_oa_pdf_prefetch, daemon=True)
+        worker.start()
+
+    def run_oa_pdf_prefetch(self):
+        """Background worker: resolve OA PDF URLs and download available PDFs."""
+        os.makedirs(self.oa_pdf_dir, exist_ok=True)
+
+        cache = load_oa_pdf_cache(self.oa_pdf_cache_file)
+        self.oa_pdf_cache = cache
+        unpaywall_email = self.unpaywall_email
+        checked_at = datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z')
+
+        if not unpaywall_email:
+            print('OA PDF prefetch skipped: provide -e/--email or set UNPAYWALL_EMAIL to enable Unpaywall checks.')
+            return
+
+        pmid_to_doi: Dict[str, str] = {}
+        for _, row in self.filtered.iterrows():
+            pmid = normalize_pmid(row.get('pmid', ''))
+            if not pmid or pmid in pmid_to_doi:
+                continue
+            article = self.article_metadata_by_pmid.get(pmid, {})
+            doi = self.get_article_field(article, ('doi',))
+            pmid_to_doi[pmid] = doi
+
+        downloaded_count = 0
+        checked_count = 0
+
+        for pmid, doi in pmid_to_doi.items():
+            checked_count += 1
+            cached = cache.get(pmid, {})
+            cached_path = str(cached.get('pdf_path', '')).strip()
+            if str(cached.get('status', '')) == 'downloaded' and cached_path and os.path.exists(cached_path):
+                continue
+
+            if not doi:
+                cache[pmid] = {
+                    'pmid': pmid,
+                    'doi': '',
+                    'status': 'no_doi',
+                    'pdf_url': '',
+                    'pdf_path': '',
+                    'checked_at': checked_at,
+                    'error': ''
+                }
+                self.oa_pdf_cache[pmid] = cache[pmid]
+                continue
+
+            pdf_url, error = self.fetch_oa_pdf_url_from_unpaywall(doi, unpaywall_email)
+            if not pdf_url:
+                cache[pmid] = {
+                    'pmid': pmid,
+                    'doi': doi,
+                    'status': 'no_oa_pdf',
+                    'pdf_url': '',
+                    'pdf_path': '',
+                    'checked_at': checked_at,
+                    'error': error
+                }
+                self.oa_pdf_cache[pmid] = cache[pmid]
+                continue
+
+            output_path = os.path.join(self.oa_pdf_dir, f'{pmid}.pdf')
+            ok, download_error = self.download_pdf_file(pdf_url, output_path)
+            cache[pmid] = {
+                'pmid': pmid,
+                'doi': doi,
+                'status': 'downloaded' if ok else 'download_failed',
+                'pdf_url': pdf_url,
+                'pdf_path': output_path if ok else '',
+                'checked_at': checked_at,
+                'error': download_error
+            }
+            self.oa_pdf_cache[pmid] = cache[pmid]
+            if ok:
+                downloaded_count += 1
+
+        save_oa_pdf_cache(self.oa_pdf_cache_file, cache)
+        print(
+            f'OA PDF prefetch complete: checked {checked_count} PMIDs, '
+            f'downloaded {downloaded_count} PDFs into {self.oa_pdf_dir}'
+        )
+
+    def fetch_oa_pdf_url_from_unpaywall(self, doi: str, email: str) -> Tuple[str, str]:
+        """Resolve best OA PDF URL for DOI via Unpaywall."""
+        safe_doi = doi.strip()
+        if not safe_doi:
+            return '', 'missing DOI'
+
+        endpoint = f'https://api.unpaywall.org/v2/{safe_doi}'
+        try:
+            response = requests.get(
+                endpoint,
+                params={'email': email},
+                timeout=OA_HTTP_TIMEOUT_SECONDS,
+                headers={'User-Agent': 'akg-review-check/1.0'}
+            )
+        except Exception as e:
+            return '', f'unpaywall request failed: {e}'
+
+        if response.status_code != 200:
+            return '', f'unpaywall status {response.status_code}'
+
+        try:
+            data = response.json()
+        except Exception:
+            return '', 'unpaywall invalid JSON response'
+
+        best_location = data.get('best_oa_location') or {}
+        best_url = str(best_location.get('url_for_pdf') or '').strip()
+        if best_url:
+            return best_url, ''
+
+        for location in data.get('oa_locations', []) or []:
+            candidate = str((location or {}).get('url_for_pdf') or '').strip()
+            if candidate:
+                return candidate, ''
+
+        return '', 'no OA PDF URL in Unpaywall record'
+
+    def download_pdf_file(self, pdf_url: str, output_path: str) -> Tuple[bool, str]:
+        """Download PDF from URL and validate basic PDF signature."""
+        try:
+            response = requests.get(
+                pdf_url,
+                timeout=OA_HTTP_TIMEOUT_SECONDS,
+                headers={'User-Agent': 'Mozilla/5.0'}
+            )
+        except Exception as e:
+            return False, f'download request failed: {e}'
+
+        if response.status_code != 200:
+            return False, f'download status {response.status_code}'
+
+        content = response.content
+        if not content.startswith(b'%PDF'):
+            return False, 'downloaded content is not a PDF'
+
+        try:
+            with open(output_path, 'wb') as f:
+                f.write(content)
+        except Exception as e:
+            return False, f'failed to write PDF: {e}'
+
+        return True, ''
+
     def format_occurrence_display(self, value: str, count: int) -> str:
         """Return plain metadata value text for display."""
         return value if value else ''
+
+    def get_pdf_availability_status(self, pmid: str) -> Tuple[str, str]:
+        """Return display text and style for PDF availability status."""
+        cached = self.oa_pdf_cache.get(pmid, {}) if pmid else {}
+        status = str(cached.get('status', '')).strip()
+        pdf_path = str(cached.get('pdf_path', '')).strip()
+
+        if status == 'downloaded' and pdf_path and os.path.exists(pdf_path):
+            return 'Available (downloaded)', 'color: green; font-weight: bold;'
+        if status == 'downloaded' and (not pdf_path or not os.path.exists(pdf_path)):
+            return 'Marked downloaded (file missing)', 'color: #B06A00; font-weight: bold;'
+        if status == 'no_oa_pdf':
+            return 'Not available (no OA PDF)', 'color: #B00020; font-weight: bold;'
+        if status == 'no_doi':
+            return 'Not checked (no DOI)', 'color: #B06A00; font-weight: bold;'
+        if status == 'download_failed':
+            return 'Download failed', 'color: #B00020; font-weight: bold;'
+
+        if self.unpaywall_email:
+            return 'Checking in background...', 'color: #444; font-style: italic;'
+        return 'Not checked (provide -e/--email)', 'color: #666;'
 
     def apply_field_match_style(
         self,
@@ -944,6 +1165,10 @@ class ReviewCheckWindow(QMainWindow):
         """Update top article metadata panel for the selected row."""
         pmid_value = normalize_pmid(row.get('pmid', ''))
         self.article_pmid_value_label.setText(pmid_value)
+
+        pdf_text, pdf_style = self.get_pdf_availability_status(pmid_value)
+        self.article_pdf_status_label.setText(pdf_text)
+        self.article_pdf_status_label.setStyleSheet(pdf_style)
 
         article = self.article_metadata_by_pmid.get(pmid_value, {})
         title_text = self.get_article_field(article, ('title',))
@@ -1125,6 +1350,11 @@ def main():
         default=None,
         help='Path to tracking file (default: akg_tracking.xlsx in input_dir)'
     )
+    parser.add_argument(
+        '-e', '--email',
+        default=None,
+        help='Email for Unpaywall API (overrides UNPAYWALL_EMAIL if provided)'
+    )
     
     args = parser.parse_args()
     
@@ -1139,10 +1369,12 @@ def main():
         print(f"Loading tracking file: {tracking_file}")
         df = load_tracking_file(tracking_file)
         print(f"Loaded {len(df)} tracking entries")
+        if args.email:
+            print(f"Using Unpaywall email from -e/--email: {args.email}")
         
         # Create Qt application and window
         app = QApplication(sys.argv)
-        window = ReviewCheckWindow(df, tracking_file, args.input_dir)
+        window = ReviewCheckWindow(df, tracking_file, args.input_dir, args.email or '')
         window.show()
         
         sys.exit(app.exec_())
