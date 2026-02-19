@@ -8,17 +8,35 @@ import os
 import sys
 import argparse
 import json
+import shutil
+import importlib
 import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 import pandas as pd
 import requests
+from dotenv import load_dotenv
+_genai: Any = None
+_PdfReader: Any = None
+try:
+    _genai = importlib.import_module('google.generativeai')
+except Exception:
+    pass
+
+# Load environment variables from .env file (same pattern as genai_check.py)
+load_dotenv()
+try:
+    _pypdf = importlib.import_module('pypdf')
+    _PdfReader = getattr(_pypdf, 'PdfReader', None)
+except Exception:
+    pass
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QListWidget, QTextEdit, 
                              QLabel, QPushButton, QGridLayout, QTableWidget, 
                              QTableWidgetItem, QHeaderView, QSpinBox, 
-                             QCheckBox, QComboBox, QMessageBox, QStyle, QLineEdit)
-from PyQt5.QtCore import Qt
+                             QCheckBox, QComboBox, QMessageBox, QStyle, QLineEdit,
+                             QFileDialog)
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont, QColor
 
 
@@ -38,6 +56,8 @@ SETTINGS_FILENAME = 'review_check_settings.json'
 OA_PDF_CACHE_FILENAME = 'oa_pdf_cache.json'
 OA_PDF_DIRNAME = 'publication_pdfs'
 OA_HTTP_TIMEOUT_SECONDS = 20
+PDF_AI_TEXT_MAX_CHARS = 120000
+PDF_AI_MODEL_NAME = 'gemini-2.0-flash'
 
 # Field status styles
 FIELD_STYLE_OK = 'color: green; font-weight: bold;'
@@ -46,6 +66,28 @@ FIELD_STYLE_WARN_LABEL = (
     'color: #B00020; font-weight: bold; '
     'background-color: #FDECEA; border: 1px solid #F5C2C7; '
     'border-radius: 4px; padding: 1px 6px;'
+)
+
+# PDF availability badge styles
+PDF_BADGE_OK = (
+    'color: #1E7D34; font-weight: bold; '
+    'background-color: #E8F5E9; border: 1px solid #A5D6A7; '
+    'border-radius: 10px; padding: 2px 8px;'
+)
+PDF_BADGE_WARN = (
+    'color: #8A4B00; font-weight: bold; '
+    'background-color: #FFF3E0; border: 1px solid #FFCC80; '
+    'border-radius: 10px; padding: 2px 8px;'
+)
+PDF_BADGE_ERR = (
+    'color: #B00020; font-weight: bold; '
+    'background-color: #FDECEA; border: 1px solid #F5C2C7; '
+    'border-radius: 10px; padding: 2px 8px;'
+)
+PDF_BADGE_NEUTRAL = (
+    'color: #555; font-weight: bold; '
+    'background-color: #F3F4F6; border: 1px solid #D1D5DB; '
+    'border-radius: 10px; padding: 2px 8px;'
 )
 
 
@@ -218,6 +260,7 @@ def save_oa_pdf_cache(cache_file: str, cache: Dict[str, Dict[str, str]]):
 
 class ReviewCheckWindow(QMainWindow):
     """Main window for the review check application"""
+    ai_query_result_signal = pyqtSignal(str, str)
     pending_gene_choices: Dict[int, str]
     pending_pval_choices: Dict[int, str]
     pending_lfc_choices: Dict[int, str]
@@ -232,7 +275,9 @@ class ReviewCheckWindow(QMainWindow):
     oa_pdf_cache_file: str
     oa_pdf_dir: str
     oa_pdf_cache: Dict[str, Dict[str, str]]
+    pdf_text_cache: Dict[str, str]
     unpaywall_email: str
+    google_api_key: str
     preview_visible_rows: int
     current_article_abstract_text: str
     article_abstract_expanded: bool
@@ -250,6 +295,7 @@ class ReviewCheckWindow(QMainWindow):
         self.tracking_df = tracking_df
         self.tracking_file = tracking_file
         self.input_dir = input_dir
+        self.ai_query_result_signal.connect(self.on_ai_query_result)
         self.unpaywall_email = unpaywall_email.strip() if unpaywall_email else os.environ.get('UNPAYWALL_EMAIL', '').strip()
 
         tracking_dir = os.path.dirname(os.path.abspath(tracking_file)) or '.'
@@ -258,7 +304,9 @@ class ReviewCheckWindow(QMainWindow):
         self.oa_pdf_cache_file = os.path.join(tracking_dir, OA_PDF_CACHE_FILENAME)
         self.oa_pdf_dir = os.path.join(tracking_dir, OA_PDF_DIRNAME)
         self.oa_pdf_cache = load_oa_pdf_cache(self.oa_pdf_cache_file)
+        self.pdf_text_cache = {}
         self.article_metadata_by_pmid, self.article_metadata_status_message = load_article_metadata_by_pmid(self.article_metadata_file)
+        self.google_api_key = os.environ.get('GOOGLE_API_KEY', '').strip()
         self.current_article_abstract_text = ''
         ui_settings = load_ui_settings(self.settings_file)
         self.article_abstract_expanded = bool(ui_settings.get('article_abstract_expanded', False))
@@ -370,6 +418,10 @@ class ReviewCheckWindow(QMainWindow):
         self.article_pdf_status_label.setWordWrap(False)
         article_layout.addWidget(self.article_pdf_status_label, 0, 3, Qt.AlignmentFlag.AlignRight)
 
+        self.browse_pdf_button = QPushButton('Browse PDF...')
+        self.browse_pdf_button.clicked.connect(self.on_browse_pdf_for_current_pmid)
+        article_layout.addWidget(self.browse_pdf_button, 0, 4, Qt.AlignmentFlag.AlignRight)
+
         article_layout.addWidget(QLabel('Title:'), 1, 0)
         self.article_title_value_label = QLabel('')
         self.article_title_value_label.setWordWrap(True)
@@ -392,6 +444,25 @@ class ReviewCheckWindow(QMainWindow):
         self.article_other_metadata_text.setMaximumHeight(95)
         article_layout.addWidget(self.article_other_metadata_text, 4, 1)
 
+        # RHS AI query interface (kept within existing panel height)
+        article_layout.addWidget(QLabel('PDF question:'), 1, 2)
+        self.pdf_ai_query_input = QLineEdit()
+        self.pdf_ai_query_input.setPlaceholderText('Ask a question about the selected PDF text...')
+        article_layout.addWidget(self.pdf_ai_query_input, 1, 3)
+        self.ask_pdf_ai_button = QPushButton('Ask AI')
+        self.ask_pdf_ai_button.clicked.connect(self.on_ask_pdf_ai)
+        article_layout.addWidget(self.ask_pdf_ai_button, 1, 4, Qt.AlignmentFlag.AlignRight)
+
+        article_layout.addWidget(QLabel('AI answer:'), 2, 2, Qt.AlignmentFlag.AlignTop)
+        self.pdf_ai_answer_text = QTextEdit()
+        self.pdf_ai_answer_text.setReadOnly(True)
+        self.pdf_ai_answer_text.setMaximumHeight(ABSTRACT_EXPANDED_HEIGHT)
+        article_layout.addWidget(self.pdf_ai_answer_text, 2, 3, 2, 2)
+
+        self.pdf_ai_status_label = QLabel('')
+        self.pdf_ai_status_label.setWordWrap(True)
+        article_layout.addWidget(self.pdf_ai_status_label, 4, 2, 1, 3)
+
         self.article_metadata_status_label = QLabel('')
         self.article_metadata_status_label.setStyleSheet('color: #b00020;')
         self.article_metadata_status_label.setWordWrap(True)
@@ -400,8 +471,9 @@ class ReviewCheckWindow(QMainWindow):
         if self.article_metadata_status_message:
             self.article_metadata_status_label.setText(self.article_metadata_status_message)
 
-        article_layout.setColumnStretch(1, 8)
-        article_layout.setColumnStretch(3, 2)
+        article_layout.setColumnStretch(1, 6)
+        article_layout.setColumnStretch(3, 6)
+        article_layout.setColumnStretch(4, 0)
 
         main_layout.addWidget(article_panel)
         
@@ -1032,19 +1104,175 @@ class ReviewCheckWindow(QMainWindow):
         pdf_path = str(cached.get('pdf_path', '')).strip()
 
         if status == 'downloaded' and pdf_path and os.path.exists(pdf_path):
-            return 'Available (downloaded)', 'color: green; font-weight: bold;'
+            return 'Available (downloaded)', PDF_BADGE_OK
         if status == 'downloaded' and (not pdf_path or not os.path.exists(pdf_path)):
-            return 'Marked downloaded (file missing)', 'color: #B06A00; font-weight: bold;'
+            return 'Marked downloaded (file missing)', PDF_BADGE_WARN
         if status == 'no_oa_pdf':
-            return 'Not available (no OA PDF)', 'color: #B00020; font-weight: bold;'
+            return 'Not available (no OA PDF)', PDF_BADGE_ERR
         if status == 'no_doi':
-            return 'Not checked (no DOI)', 'color: #B06A00; font-weight: bold;'
+            return 'Not checked (no DOI)', PDF_BADGE_WARN
         if status == 'download_failed':
-            return 'Download failed', 'color: #B00020; font-weight: bold;'
+            return 'Download failed', PDF_BADGE_ERR
 
         if self.unpaywall_email:
-            return 'Checking in background...', 'color: #444; font-style: italic;'
-        return 'Not checked (provide -e/--email)', 'color: #666;'
+            return 'Checking in background...', PDF_BADGE_NEUTRAL
+        return 'Not checked (provide -e/--email)', PDF_BADGE_NEUTRAL
+
+    def get_cached_pdf_path_for_pmid(self, pmid: str) -> str:
+        """Return local cached/downloaded PDF path for PMID when available."""
+        cached = self.oa_pdf_cache.get(pmid, {}) if pmid else {}
+        if str(cached.get('status', '')).strip() != 'downloaded':
+            return ''
+        pdf_path = str(cached.get('pdf_path', '')).strip()
+        if pdf_path and os.path.exists(pdf_path):
+            return pdf_path
+        return ''
+
+    def update_pdf_ai_controls(self, pmid: str):
+        """Enable/disable AI query controls based on availability and configuration."""
+        pdf_path = self.get_cached_pdf_path_for_pmid(pmid)
+        has_pdf = bool(pdf_path)
+        has_genai = _genai is not None
+        has_pypdf = _PdfReader is not None
+        has_key = bool(self.google_api_key)
+
+        enabled = has_pdf and has_genai and has_pypdf and has_key
+        self.pdf_ai_query_input.setEnabled(enabled)
+        self.ask_pdf_ai_button.setEnabled(enabled)
+
+        if enabled:
+            self.pdf_ai_status_label.setText('')
+        elif not has_pdf:
+            self.pdf_ai_status_label.setText('AI query unavailable: no cached PDF for this PMID.')
+        elif not has_pypdf:
+            self.pdf_ai_status_label.setText('AI query unavailable: install pypdf to extract PDF text.')
+        elif not has_genai:
+            self.pdf_ai_status_label.setText('AI query unavailable: install google-generativeai.')
+        elif not has_key:
+            self.pdf_ai_status_label.setText('AI query unavailable: set GOOGLE_API_KEY.')
+
+    def on_ask_pdf_ai(self):
+        """Run AI query against selected PMID PDF text in background."""
+        pmid = self.article_pmid_value_label.text().strip()
+        question = self.pdf_ai_query_input.text().strip()
+        pdf_path = self.get_cached_pdf_path_for_pmid(pmid)
+
+        if not pmid:
+            self.pdf_ai_status_label.setText('No PMID selected.')
+            return
+        if not pdf_path:
+            self.pdf_ai_status_label.setText('No cached PDF found for this PMID.')
+            return
+        if not question:
+            self.pdf_ai_status_label.setText('Please enter a question.')
+            return
+
+        self.ask_pdf_ai_button.setEnabled(False)
+        self.pdf_ai_answer_text.setPlainText('')
+        self.pdf_ai_status_label.setText('Querying AI...')
+
+        worker = threading.Thread(
+            target=self.run_pdf_ai_query,
+            args=(pmid, pdf_path, question),
+            daemon=True,
+        )
+        worker.start()
+
+    def run_pdf_ai_query(self, pmid: str, pdf_path: str, question: str):
+        """Background AI query runner; posts UI updates via queued callback."""
+        error = ''
+        answer = ''
+        try:
+            if _PdfReader is None:
+                raise RuntimeError('pypdf is not installed')
+            if _genai is None:
+                raise RuntimeError('google-generativeai is not installed')
+            if not self.google_api_key:
+                raise RuntimeError('GOOGLE_API_KEY is not configured')
+
+            doc_text = self.pdf_text_cache.get(pmid, '')
+            if not doc_text:
+                reader = _PdfReader(pdf_path)
+                parts = []
+                for page in reader.pages:
+                    parts.append(page.extract_text() or '')
+                doc_text = '\n'.join(parts).strip()
+                if not doc_text:
+                    raise RuntimeError('No extractable text found in PDF')
+                if len(doc_text) > PDF_AI_TEXT_MAX_CHARS:
+                    doc_text = doc_text[:PDF_AI_TEXT_MAX_CHARS]
+                self.pdf_text_cache[pmid] = doc_text
+
+            _genai.configure(api_key=self.google_api_key)
+            model = _genai.GenerativeModel(PDF_AI_MODEL_NAME)
+            prompt = (
+                'You are answering a question about a scientific paper PDF. '
+                'Use only the provided extracted text. If the answer is not present, say so clearly.\n\n'
+                f'Question: {question}\n\n'
+                'Paper text:\n'
+                f'{doc_text}'
+            )
+            response = model.generate_content(prompt)
+            answer = str(getattr(response, 'text', '') or '').strip()
+            if not answer:
+                answer = 'No answer returned by model.'
+        except Exception as e:
+            error = str(e)
+        self.ai_query_result_signal.emit(answer, error)
+
+    def on_ai_query_result(self, answer: str, error: str):
+        """Handle AI query completion on UI thread."""
+        self.ask_pdf_ai_button.setEnabled(True)
+        if error:
+            self.pdf_ai_status_label.setText(f'AI query failed: {error}')
+            self.pdf_ai_answer_text.setPlainText('')
+        else:
+            self.pdf_ai_status_label.setText('AI response ready.')
+            self.pdf_ai_answer_text.setPlainText(answer)
+
+    def on_browse_pdf_for_current_pmid(self):
+        """Let user choose a local PDF for current PMID and cache it as available."""
+        pmid = self.article_pmid_value_label.text().strip()
+        if not pmid:
+            QMessageBox.warning(self, 'No PMID', 'No PMID is currently selected.')
+            return
+
+        selected_path, _ = QFileDialog.getOpenFileName(
+            self,
+            'Select PDF for current PMID',
+            '',
+            'PDF Files (*.pdf);;All Files (*)'
+        )
+        if not selected_path:
+            return
+
+        try:
+            os.makedirs(self.oa_pdf_dir, exist_ok=True)
+            target_path = os.path.join(self.oa_pdf_dir, f'{pmid}.pdf')
+
+            if os.path.abspath(selected_path) != os.path.abspath(target_path):
+                shutil.copyfile(selected_path, target_path)
+
+            checked_at = datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z')
+            existing = self.oa_pdf_cache.get(pmid, {})
+            doi = str(existing.get('doi', '')).strip()
+
+            self.oa_pdf_cache[pmid] = {
+                'pmid': pmid,
+                'doi': doi,
+                'status': 'downloaded',
+                'pdf_url': 'local-file-selected',
+                'pdf_path': target_path,
+                'checked_at': checked_at,
+                'error': ''
+            }
+            save_oa_pdf_cache(self.oa_pdf_cache_file, self.oa_pdf_cache)
+
+            current_row = self.filtered.iloc[self.current_index]
+            self.update_article_metadata_display(current_row)
+            QMessageBox.information(self, 'PDF cached', f'PDF saved for PMID {pmid}.')
+        except Exception as e:
+            QMessageBox.critical(self, 'Error', f'Failed to cache selected PDF: {e}')
 
     def apply_field_match_style(
         self,
@@ -1169,6 +1397,7 @@ class ReviewCheckWindow(QMainWindow):
         pdf_text, pdf_style = self.get_pdf_availability_status(pmid_value)
         self.article_pdf_status_label.setText(pdf_text)
         self.article_pdf_status_label.setStyleSheet(pdf_style)
+        self.update_pdf_ai_controls(pmid_value)
 
         article = self.article_metadata_by_pmid.get(pmid_value, {})
         title_text = self.get_article_field(article, ('title',))
