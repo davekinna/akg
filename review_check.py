@@ -21,6 +21,8 @@ _PdfReader: Any = None
 try:
     _genai = importlib.import_module('google.generativeai')
 except Exception:
+    # Optional dependency: keep app startup working without google-generativeai.
+    # PDF-AI controls are disabled later with a user-visible status message.
     pass
 
 # Load environment variables from .env file (same pattern as genai_check.py)
@@ -29,6 +31,8 @@ try:
     _pypdf = importlib.import_module('pypdf')
     _PdfReader = getattr(_pypdf, 'PdfReader', None)
 except Exception:
+    # Optional dependency: keep app startup working without pypdf.
+    # PDF-AI controls are disabled later with a user-visible status message.
     pass
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QListWidget, QTextEdit, 
@@ -485,8 +489,12 @@ class ReviewCheckWindow(QMainWindow):
         
         # Left side: file list widget
         left_widget = QWidget()
+        left_widget.setObjectName('leftReviewPanel')
+        left_widget.setStyleSheet(
+            '#leftReviewPanel {border: 1px solid #D1D5DB; border-radius: 6px;}'
+        )
         left_layout = QVBoxLayout(left_widget)
-        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setContentsMargins(6, 6, 6, 6)
         left_layout.addWidget(QLabel('Supplementary files to review:'))
         
         self.file_list = QListWidget()
@@ -500,32 +508,25 @@ class ReviewCheckWindow(QMainWindow):
         
         left_layout.addWidget(self.file_list)
         content_layout.addWidget(left_widget, 0, 0, 2, 1)
-        
-        # Top-right: preview widget
-        preview_widget = QWidget()
-        preview_layout = QVBoxLayout(preview_widget)
-        preview_layout.setContentsMargins(0, 0, 0, 0)
-        
-        # Preview section
-        self.preview_header_label = QLabel('Preview (first 20 rows) of:')
-        self.preview_header_label.setWordWrap(False)
-        preview_layout.addWidget(self.preview_header_label)
-        self.preview_table = QTableWidget()
-        self.preview_table.setEditTriggers(QTableWidget.NoEditTriggers)  # Read-only
-        preview_header = self.preview_table.horizontalHeader()
-        if isinstance(preview_header, QHeaderView):
-            preview_header.setStretchLastSection(True)
-        self.preview_table.setAlternatingRowColors(True)
-        preview_layout.addWidget(self.preview_table)
-        content_layout.addWidget(preview_widget, 0, 1)
 
-        # Bottom-right: metadata widget
+        # Right side: bordered panel for table characteristics + preview
+        right_widget = QWidget()
+        right_widget.setObjectName('rightReviewPanel')
+        right_widget.setStyleSheet(
+            '#rightReviewPanel {border: 1px solid #D1D5DB; border-radius: 6px;}'
+        )
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(6, 6, 6, 6)
+        right_layout.setSpacing(8)
+        
+        # Top-right: metadata widget
         metadata_widget = QWidget()
         metadata_widget_layout = QVBoxLayout(metadata_widget)
         metadata_widget_layout.setContentsMargins(0, 0, 0, 0)
+        metadata_widget_layout.addWidget(QLabel('Table characteristics for this file:'))
         
         metadata_layout = QGridLayout()
-        metadata_layout.setContentsMargins(0, 6, 0, 0)
+        metadata_layout.setContentsMargins(0, 0, 0, 0)
         
         # Skip field (editable with spinbox)
         skip_header_label = QLabel('Skip:')
@@ -583,12 +584,34 @@ class ReviewCheckWindow(QMainWindow):
         metadata_layout.setHorizontalSpacing(16)
         
         metadata_widget_layout.addLayout(metadata_layout)
-        content_layout.addWidget(metadata_widget, 1, 1)
+        right_layout.addWidget(metadata_widget)
+
+        # Bottom-right: preview widget
+        preview_widget = QWidget()
+        preview_layout = QVBoxLayout(preview_widget)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Preview section
+        self.preview_header_label = QLabel('Preview (first 20 rows) of:')
+        self.preview_header_label.setWordWrap(False)
+        preview_layout.addWidget(self.preview_header_label)
+        self.preview_table = QTableWidget()
+        self.preview_table.setEditTriggers(QTableWidget.NoEditTriggers)  # Read-only
+        preview_header = self.preview_table.horizontalHeader()
+        if isinstance(preview_header, QHeaderView):
+            preview_header.setStretchLastSection(True)
+        self.preview_table.setAlternatingRowColors(True)
+        preview_layout.addWidget(self.preview_table)
+        right_layout.addWidget(preview_widget)
+        right_layout.setStretch(0, 0)
+        right_layout.setStretch(1, 1)
+
+        content_layout.addWidget(right_widget, 0, 1, 2, 1)
 
         content_layout.setColumnStretch(0, 2)
         content_layout.setColumnStretch(1, 8)
-        content_layout.setRowStretch(0, 1)
-        content_layout.setRowStretch(1, 0)
+        content_layout.setRowStretch(0, 0)
+        content_layout.setRowStretch(1, 1)
 
         main_layout.addLayout(content_layout)
         
@@ -1108,7 +1131,7 @@ class ReviewCheckWindow(QMainWindow):
         if status == 'downloaded' and (not pdf_path or not os.path.exists(pdf_path)):
             return 'Marked downloaded (file missing)', PDF_BADGE_WARN
         if status == 'no_oa_pdf':
-            return 'Not available (no OA PDF)', PDF_BADGE_ERR
+            return 'Not available (no open access PDF)', PDF_BADGE_ERR
         if status == 'no_doi':
             return 'Not checked (no DOI)', PDF_BADGE_WARN
         if status == 'download_failed':
