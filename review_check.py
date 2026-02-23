@@ -39,8 +39,8 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QLabel, QPushButton, QGridLayout, QTableWidget, 
                              QTableWidgetItem, QHeaderView, QSpinBox, 
                              QCheckBox, QComboBox, QMessageBox, QStyle, QLineEdit,
-                             QFileDialog)
-from PyQt5.QtCore import Qt, pyqtSignal
+                             QFileDialog, QDialog)
+from PyQt5.QtCore import Qt, pyqtSignal, QPoint
 from PyQt5.QtGui import QFont, QColor
 
 
@@ -62,6 +62,7 @@ OA_PDF_DIRNAME = 'publication_pdfs'
 OA_HTTP_TIMEOUT_SECONDS = 20
 PDF_AI_TEXT_MAX_CHARS = 120000
 PDF_AI_MODEL_NAME = 'gemini-2.0-flash'
+PDF_AI_QUESTION_HISTORY_MAX = 30
 
 # Field status styles
 FIELD_STYLE_OK = 'color: green; font-weight: bold;'
@@ -283,6 +284,8 @@ class ReviewCheckWindow(QMainWindow):
     unpaywall_email: str
     google_api_key: str
     preview_visible_rows: int
+    pdf_ai_question_history: list[str]
+    ai_answer_pmid: str
     current_article_abstract_text: str
     article_abstract_expanded: bool
     has_unsaved_changes: bool
@@ -309,12 +312,25 @@ class ReviewCheckWindow(QMainWindow):
         self.oa_pdf_dir = os.path.join(tracking_dir, OA_PDF_DIRNAME)
         self.oa_pdf_cache = load_oa_pdf_cache(self.oa_pdf_cache_file)
         self.pdf_text_cache = {}
+        self.ai_answer_pmid = ''
         self.article_metadata_by_pmid, self.article_metadata_status_message = load_article_metadata_by_pmid(self.article_metadata_file)
         self.google_api_key = os.environ.get('GOOGLE_API_KEY', '').strip()
         self.current_article_abstract_text = ''
         ui_settings = load_ui_settings(self.settings_file)
         self.article_abstract_expanded = bool(ui_settings.get('article_abstract_expanded', False))
         preview_rows_raw = ui_settings.get('preview_visible_rows', DEFAULT_PREVIEW_VISIBLE_ROWS)
+        raw_pdf_ai_history = ui_settings.get('pdf_ai_question_history', [])
+        self.pdf_ai_question_history = []
+        if isinstance(raw_pdf_ai_history, list):
+            seen_questions = set()
+            for value in raw_pdf_ai_history:
+                question = str(value).strip()
+                if not question or question in seen_questions:
+                    continue
+                seen_questions.add(question)
+                self.pdf_ai_question_history.append(question)
+                if len(self.pdf_ai_question_history) >= PDF_AI_QUESTION_HISTORY_MAX:
+                    break
         try:
             self.preview_visible_rows = int(preview_rows_raw)
         except (TypeError, ValueError):
@@ -327,6 +343,9 @@ class ReviewCheckWindow(QMainWindow):
             settings_updated = True
         if 'article_abstract_expanded' not in ui_settings:
             ui_settings['article_abstract_expanded'] = self.article_abstract_expanded
+            settings_updated = True
+        if ui_settings.get('pdf_ai_question_history') != self.pdf_ai_question_history:
+            ui_settings['pdf_ai_question_history'] = list(self.pdf_ai_question_history)
             settings_updated = True
         if settings_updated:
             save_ui_settings(self.settings_file, ui_settings)
@@ -450,18 +469,37 @@ class ReviewCheckWindow(QMainWindow):
 
         # RHS AI query interface (kept within existing panel height)
         article_layout.addWidget(QLabel('PDF question:'), 1, 2)
-        self.pdf_ai_query_input = QLineEdit()
-        self.pdf_ai_query_input.setPlaceholderText('Ask a question about the selected PDF text...')
+        self.pdf_ai_query_input = QComboBox()
+        self.pdf_ai_query_input.setEditable(True)
+        self.pdf_ai_query_input.setInsertPolicy(QComboBox.NoInsert)
+        for question in self.pdf_ai_question_history:
+            self.pdf_ai_query_input.addItem(question)
+        question_line_edit = self.pdf_ai_query_input.lineEdit()
+        if question_line_edit is not None:
+            question_line_edit.setPlaceholderText('Ask a question about the selected PDF text...')
         article_layout.addWidget(self.pdf_ai_query_input, 1, 3)
+
+        ai_question_actions = QWidget()
+        ai_question_actions_layout = QHBoxLayout(ai_question_actions)
+        ai_question_actions_layout.setContentsMargins(0, 0, 0, 0)
+        ai_question_actions_layout.setSpacing(6)
+        ai_question_actions_layout.addStretch()
+
         self.ask_pdf_ai_button = QPushButton('Ask AI')
+        self.ask_pdf_ai_button.setStyleSheet('font-weight: bold;')
         self.ask_pdf_ai_button.clicked.connect(self.on_ask_pdf_ai)
-        article_layout.addWidget(self.ask_pdf_ai_button, 1, 4, Qt.AlignmentFlag.AlignRight)
+        ai_question_actions_layout.addWidget(self.ask_pdf_ai_button)
+
+        self.clear_pdf_ai_history_button = QPushButton('Clear history')
+        self.clear_pdf_ai_history_button.clicked.connect(self.on_clear_pdf_ai_history)
+        ai_question_actions_layout.addWidget(self.clear_pdf_ai_history_button)
+        article_layout.addWidget(ai_question_actions, 1, 4, Qt.AlignmentFlag.AlignRight)
 
         article_layout.addWidget(QLabel('AI answer:'), 2, 2, Qt.AlignmentFlag.AlignTop)
         self.pdf_ai_answer_text = QTextEdit()
         self.pdf_ai_answer_text.setReadOnly(True)
         self.pdf_ai_answer_text.setMaximumHeight(ABSTRACT_EXPANDED_HEIGHT)
-        article_layout.addWidget(self.pdf_ai_answer_text, 2, 3, 2, 2)
+        article_layout.addWidget(self.pdf_ai_answer_text, 2, 3, 1, 2, Qt.AlignmentFlag.AlignTop)
 
         self.pdf_ai_status_label = QLabel('')
         self.pdf_ai_status_label.setWordWrap(True)
@@ -523,7 +561,19 @@ class ReviewCheckWindow(QMainWindow):
         metadata_widget = QWidget()
         metadata_widget_layout = QVBoxLayout(metadata_widget)
         metadata_widget_layout.setContentsMargins(0, 0, 0, 0)
-        metadata_widget_layout.addWidget(QLabel('Table characteristics for this file:'))
+        metadata_header_layout = QHBoxLayout()
+        metadata_header_layout.setContentsMargins(0, 0, 0, 0)
+        metadata_header_layout.addWidget(QLabel('Table characteristics for this file:'))
+        metadata_header_layout.addStretch()
+        self.suitablereason_button = QPushButton('Reason...')
+        self.suitablereason_button.clicked.connect(self.on_show_suitablereason)
+        metadata_header_layout.addWidget(self.suitablereason_button)
+        metadata_widget_layout.addLayout(metadata_header_layout)
+
+        has_suitablereason_column = 'suitablereason' in self.filtered.columns
+        self.suitablereason_button.setEnabled(has_suitablereason_column)
+        if not has_suitablereason_column:
+            self.suitablereason_button.setToolTip('Tracking file has no suitablereason column.')
         
         metadata_layout = QGridLayout()
         metadata_layout.setContentsMargins(0, 0, 0, 0)
@@ -866,6 +916,56 @@ class ReviewCheckWindow(QMainWindow):
         self.pending_reason_values[self.current_index] = value.strip()
         self.update_dirty_state()
 
+    def on_show_suitablereason(self):
+        """Show the suitablereason text for the currently selected supplementary file."""
+        popup = getattr(self, '_suitablereason_popup', None)
+        if popup is not None and popup.isVisible():
+            popup.close()
+            self._suitablereason_popup = None
+            return
+
+        reason_text = ''
+        if 0 <= self.current_index < len(self.filtered):
+            row = self.filtered.iloc[self.current_index]
+            if 'suitablereason' in self.filtered.columns:
+                raw_reason = row.get('suitablereason', '')
+                if pd.notna(raw_reason):
+                    reason_text = str(raw_reason).strip()
+
+        if not reason_text:
+            reason_text = '(No suitablereason text available for this file.)'
+
+        dialog = QDialog(self, flags=Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        dialog.setObjectName('suitablereasonPopup')
+        dialog.setStyleSheet(
+            '#suitablereasonPopup {background: #FFFBEB; border: 1px solid #D1D5DB; border-radius: 6px;}'
+        )
+
+        dialog_layout = QVBoxLayout(dialog)
+        dialog_layout.setContentsMargins(8, 8, 8, 8)
+        dialog_layout.setSpacing(6)
+
+        title_label = QLabel('Table characteristics rationale (from genai_check.py)')
+        title_font = title_label.font()
+        title_font.setBold(True)
+        title_label.setFont(title_font)
+        dialog_layout.addWidget(title_label)
+
+        reason_view = QTextEdit()
+        reason_view.setReadOnly(True)
+        reason_view.setPlainText(reason_text)
+        reason_view.setMinimumSize(480, 200)
+        reason_view.setMaximumSize(620, 300)
+        reason_view.setStyleSheet('border: none; background: transparent;')
+        dialog_layout.addWidget(reason_view)
+
+        anchor_point = self.suitablereason_button.mapToGlobal(
+            QPoint(0, self.suitablereason_button.height() + 4)
+        )
+        dialog.move(anchor_point)
+        dialog.show()
+        self._suitablereason_popup = dialog
+
     def update_dirty_state(self):
         """Recompute dirty state from current values vs last saved values."""
         dirty = False
@@ -1165,32 +1265,67 @@ class ReviewCheckWindow(QMainWindow):
 
         if enabled:
             self.pdf_ai_status_label.setText('')
+            self.pdf_ai_answer_text.setStyleSheet('')
+            if self.ai_answer_pmid != pmid:
+                self.pdf_ai_answer_text.setPlainText('')
+                self.ai_answer_pmid = ''
         elif not has_pdf:
-            self.pdf_ai_status_label.setText('AI query unavailable: no cached PDF for this PMID.')
+            message = 'AI query unavailable: no cached PDF for this PMID.'
+            self.pdf_ai_status_label.setText('')
+            self.pdf_ai_answer_text.setStyleSheet('color: #B00020;')
+            self.pdf_ai_answer_text.setPlainText(message)
+            self.ai_answer_pmid = ''
         elif not has_pypdf:
-            self.pdf_ai_status_label.setText('AI query unavailable: install pypdf to extract PDF text.')
+            message = 'AI query unavailable: install pypdf to extract PDF text.'
+            self.pdf_ai_status_label.setText('')
+            self.pdf_ai_answer_text.setStyleSheet('color: #B00020;')
+            self.pdf_ai_answer_text.setPlainText(message)
+            self.ai_answer_pmid = ''
         elif not has_genai:
-            self.pdf_ai_status_label.setText('AI query unavailable: install google-generativeai.')
+            message = 'AI query unavailable: install google-generativeai.'
+            self.pdf_ai_status_label.setText('')
+            self.pdf_ai_answer_text.setStyleSheet('color: #B00020;')
+            self.pdf_ai_answer_text.setPlainText(message)
+            self.ai_answer_pmid = ''
         elif not has_key:
-            self.pdf_ai_status_label.setText('AI query unavailable: set GOOGLE_API_KEY.')
+            message = 'AI query unavailable: set GOOGLE_API_KEY.'
+            self.pdf_ai_status_label.setText('')
+            self.pdf_ai_answer_text.setStyleSheet('color: #B00020;')
+            self.pdf_ai_answer_text.setPlainText(message)
+            self.ai_answer_pmid = ''
 
     def on_ask_pdf_ai(self):
         """Run AI query against selected PMID PDF text in background."""
         pmid = self.article_pmid_value_label.text().strip()
-        question = self.pdf_ai_query_input.text().strip()
+        question = self.pdf_ai_query_input.currentText().strip()
         pdf_path = self.get_cached_pdf_path_for_pmid(pmid)
 
         if not pmid:
-            self.pdf_ai_status_label.setText('No PMID selected.')
+            message = 'No PMID selected.'
+            self.pdf_ai_status_label.setText('')
+            self.pdf_ai_answer_text.setStyleSheet('color: #B00020;')
+            self.pdf_ai_answer_text.setPlainText(message)
+            self.ai_answer_pmid = ''
             return
         if not pdf_path:
-            self.pdf_ai_status_label.setText('No cached PDF found for this PMID.')
+            message = 'No cached PDF found for this PMID.'
+            self.pdf_ai_status_label.setText('')
+            self.pdf_ai_answer_text.setStyleSheet('color: #B00020;')
+            self.pdf_ai_answer_text.setPlainText(message)
+            self.ai_answer_pmid = ''
             return
         if not question:
-            self.pdf_ai_status_label.setText('Please enter a question.')
+            message = 'Please enter a question.'
+            self.pdf_ai_status_label.setText('')
+            self.pdf_ai_answer_text.setStyleSheet('color: #B00020;')
+            self.pdf_ai_answer_text.setPlainText(message)
+            self.ai_answer_pmid = ''
             return
 
+        self.add_pdf_ai_question_to_history(question)
+
         self.ask_pdf_ai_button.setEnabled(False)
+        self.pdf_ai_answer_text.setStyleSheet('')
         self.pdf_ai_answer_text.setPlainText('')
         self.pdf_ai_status_label.setText('Querying AI...')
 
@@ -1247,11 +1382,16 @@ class ReviewCheckWindow(QMainWindow):
         """Handle AI query completion on UI thread."""
         self.ask_pdf_ai_button.setEnabled(True)
         if error:
-            self.pdf_ai_status_label.setText(f'AI query failed: {error}')
-            self.pdf_ai_answer_text.setPlainText('')
+            message = f'AI query failed: {error}'
+            self.pdf_ai_status_label.setText('')
+            self.pdf_ai_answer_text.setStyleSheet('color: #B00020;')
+            self.pdf_ai_answer_text.setPlainText(message)
+            self.ai_answer_pmid = ''
         else:
             self.pdf_ai_status_label.setText('AI response ready.')
+            self.pdf_ai_answer_text.setStyleSheet('')
             self.pdf_ai_answer_text.setPlainText(answer)
+            self.ai_answer_pmid = self.article_pmid_value_label.text().strip()
 
     def on_browse_pdf_for_current_pmid(self):
         """Let user choose a local PDF for current PMID and cache it as available."""
@@ -1408,9 +1548,64 @@ class ReviewCheckWindow(QMainWindow):
         """Toggle abstract panel between compact preview and expanded view."""
         self.article_abstract_expanded = not self.article_abstract_expanded
         self.refresh_article_abstract_display()
-        save_ui_settings(self.settings_file, {
+        self.update_ui_settings({
             'article_abstract_expanded': self.article_abstract_expanded
         })
+
+    def update_ui_settings(self, updates: Dict[str, Any]):
+        """Merge updates into persisted UI settings without dropping existing keys."""
+        settings = load_ui_settings(self.settings_file)
+        settings.update(updates)
+        save_ui_settings(self.settings_file, settings)
+
+    def add_pdf_ai_question_to_history(self, question: str):
+        """Persist PDF-AI question history and keep dropdown options in sync."""
+        safe_question = question.strip()
+        if not safe_question:
+            return
+
+        history = [item for item in self.pdf_ai_question_history if item != safe_question]
+        history.insert(0, safe_question)
+        self.pdf_ai_question_history = history[:PDF_AI_QUESTION_HISTORY_MAX]
+
+        current_text = self.pdf_ai_query_input.currentText().strip()
+        self.pdf_ai_query_input.blockSignals(True)
+        self.pdf_ai_query_input.clear()
+        for item in self.pdf_ai_question_history:
+            self.pdf_ai_query_input.addItem(item)
+        self.pdf_ai_query_input.setCurrentText(current_text or safe_question)
+        self.pdf_ai_query_input.blockSignals(False)
+
+        self.update_ui_settings({'pdf_ai_question_history': list(self.pdf_ai_question_history)})
+
+    def on_clear_pdf_ai_history(self):
+        """Clear persisted PDF-AI question history and dropdown entries."""
+        if not self.pdf_ai_question_history and self.pdf_ai_query_input.count() == 0:
+            self.pdf_ai_status_label.setText('Question history is already empty.')
+            return
+
+        confirm = QMessageBox.question(
+            self,
+            'Clear question history',
+            'Clear all saved PDF question history?',
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+
+        self.pdf_ai_question_history = []
+        self.pdf_ai_query_input.blockSignals(True)
+        self.pdf_ai_query_input.clear()
+        self.pdf_ai_query_input.setCurrentText('')
+        self.pdf_ai_query_input.blockSignals(False)
+
+        question_line_edit = self.pdf_ai_query_input.lineEdit()
+        if question_line_edit is not None:
+            question_line_edit.setPlaceholderText('Ask a question about the selected PDF text...')
+
+        self.update_ui_settings({'pdf_ai_question_history': []})
+        self.pdf_ai_status_label.setText('Question history cleared.')
 
     def update_article_metadata_display(self, row: pd.Series):
         """Update top article metadata panel for the selected row."""
