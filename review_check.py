@@ -41,14 +41,14 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QTableWidgetItem, QHeaderView, QSpinBox, 
                              QCheckBox, QComboBox, QMessageBox, QStyle, QLineEdit,
                              QFileDialog, QDialog, QTextBrowser)
-from PyQt5.QtCore import Qt, pyqtSignal, QPoint
+from PyQt5.QtCore import Qt, pyqtSignal, QPoint, QTimer
 from PyQt5.QtGui import QFont, QColor
 
 
 # Preview/table display
 MAX_DISPLAY_CELL_CHARS = 20
 DEFAULT_PREVIEW_VISIBLE_ROWS = 10
-PREVIEW_EXTRA_PADDING_PX = 36
+PREVIEW_EXTRA_PADDING_PX = 28
 
 # Article panel display
 ABSTRACT_BOX_HEIGHT = 260
@@ -284,6 +284,7 @@ class ReviewCheckWindow(QMainWindow):
     preview_visible_rows: int
     pdf_ai_question_history: list[str]
     ai_answer_pmid: str
+    review_position_labels: list[QLabel]
     current_article_abstract_text: str
     has_unsaved_changes: bool
     
@@ -360,6 +361,8 @@ class ReviewCheckWindow(QMainWindow):
         self.initial_row_values = {}
         self.saved_row_values = {}
         self.has_unsaved_changes = False
+        self.review_position_labels = []
+        self._post_show_height_fix_done = False
 
         if 'manualreason' not in self.tracking_df.columns:
             self.tracking_df['manualreason'] = ''
@@ -386,17 +389,17 @@ class ReviewCheckWindow(QMainWindow):
         
         # Set window properties
         self.setWindowTitle('Review Check')
-        self.setGeometry(100, 100, 1200, 900)
+        self.setGeometry(100, 100, 1200, 840)
         
         # Create central widget and main layout
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
-        main_layout.setSpacing(2)  # Minimal spacing
-        main_layout.setContentsMargins(5, 5, 5, 5)  # Minimal margins
+        main_layout.setSpacing(6)
+        main_layout.setContentsMargins(6, 6, 6, 6)
         
         # Title
-        title_label = QLabel('Tracking Review - Entries with step=1, suitable=TRUE, excl=FALSE')
+        title_label = QLabel('Supplementary Table Review - Entries in tracking file with step=1, suitable=TRUE, excl=FALSE')
         title_font = title_label.font()
         title_font.setPointSize(10)
         title_font.setBold(True)
@@ -434,15 +437,15 @@ class ReviewCheckWindow(QMainWindow):
         )
         article_layout = QGridLayout(article_panel)
         article_layout.setContentsMargins(6, 6, 6, 6)
-        article_layout.setHorizontalSpacing(8)
-        article_layout.setVerticalSpacing(2)
+        article_layout.setHorizontalSpacing(10)
+        article_layout.setVerticalSpacing(4)
 
         article_layout.addWidget(QLabel('PMID:'), 0, 0)
         self.article_pmid_value_label = QLabel('')
         self.article_pmid_value_label.setWordWrap(False)
         article_layout.addWidget(self.article_pmid_value_label, 0, 1)
 
-        article_layout.addWidget(QLabel('PDF availability:'), 0, 2)
+        article_layout.addWidget(QLabel('Text availability:'), 0, 2)
         self.article_pdf_status_label = QLabel('')
         self.article_pdf_status_label.setWordWrap(False)
         article_layout.addWidget(self.article_pdf_status_label, 0, 3, Qt.AlignmentFlag.AlignRight)
@@ -472,7 +475,7 @@ class ReviewCheckWindow(QMainWindow):
         article_layout.addWidget(self.article_other_metadata_text, 3, 1)
 
         # RHS AI query interface (kept within existing panel height)
-        article_layout.addWidget(QLabel('PDF question:'), 1, 2)
+        article_layout.addWidget(QLabel('Question:'), 1, 2)
         self.pdf_ai_query_input = QComboBox()
         self.pdf_ai_query_input.setEditable(True)
         self.pdf_ai_query_input.setInsertPolicy(QComboBox.NoInsert)
@@ -504,11 +507,27 @@ class ReviewCheckWindow(QMainWindow):
         self.pdf_ai_answer_text.setReadOnly(True)
         self.pdf_ai_answer_text.setMinimumHeight(ABSTRACT_BOX_HEIGHT)
         self.pdf_ai_answer_text.setMaximumHeight(ABSTRACT_BOX_HEIGHT)
-        article_layout.addWidget(self.pdf_ai_answer_text, 2, 3, 1, 2, Qt.AlignmentFlag.AlignTop)
+        article_layout.addWidget(self.pdf_ai_answer_text, 2, 3, 1, 2)
 
         self.pdf_ai_status_label = QLabel('')
         self.pdf_ai_status_label.setWordWrap(True)
-        article_layout.addWidget(self.pdf_ai_status_label, 3, 2, 1, 3)
+
+        lower_nav_widget = self.build_navigation_row_widget()
+        lower_nav_container = QWidget()
+        lower_nav_layout = QVBoxLayout(lower_nav_container)
+        lower_nav_layout.setContentsMargins(0, 0, 0, 0)
+        lower_nav_layout.setSpacing(4)
+
+        lower_nav_layout.addWidget(self.pdf_ai_status_label)
+
+        lower_nav_row_layout = QHBoxLayout()
+        lower_nav_row_layout.setContentsMargins(0, 0, 0, 0)
+        lower_nav_row_layout.setSpacing(0)
+        lower_nav_row_layout.addStretch()
+        lower_nav_row_layout.addWidget(lower_nav_widget)
+        lower_nav_layout.addLayout(lower_nav_row_layout)
+
+        article_layout.addWidget(lower_nav_container, 3, 2, 1, 3)
 
         self.article_metadata_status_label = QLabel('')
         self.article_metadata_status_label.setStyleSheet('color: #b00020;')
@@ -525,8 +544,8 @@ class ReviewCheckWindow(QMainWindow):
         # Main content grid: left file list, top-right preview, bottom-right metadata
         content_layout = QGridLayout()
         content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setHorizontalSpacing(8)
-        content_layout.setVerticalSpacing(8)
+        content_layout.setHorizontalSpacing(10)
+        content_layout.setVerticalSpacing(10)
         
         # Left side: file list widget
         left_widget = QWidget()
@@ -536,6 +555,7 @@ class ReviewCheckWindow(QMainWindow):
         )
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(6, 6, 6, 6)
+        left_layout.setSpacing(6)
         left_layout.addWidget(QLabel('Supplementary files to review:'))
         
         self.file_list = QListWidget()
@@ -550,6 +570,10 @@ class ReviewCheckWindow(QMainWindow):
         left_layout.addWidget(self.file_list)
         content_layout.addWidget(left_widget, 0, 0, 2, 1)
 
+        # Duplicate navigation row above the right panel
+        top_nav_widget = self.build_navigation_row_widget()
+        content_layout.addWidget(top_nav_widget, 0, 1)
+
         # Right side: bordered panel for table characteristics + preview
         right_widget = QWidget()
         right_widget.setObjectName('rightReviewPanel')
@@ -558,17 +582,19 @@ class ReviewCheckWindow(QMainWindow):
         )
         right_layout = QVBoxLayout(right_widget)
         right_layout.setContentsMargins(6, 6, 6, 6)
-        right_layout.setSpacing(8)
+        right_layout.setSpacing(6)
         
         # Top-right: metadata widget
         metadata_widget = QWidget()
         metadata_widget_layout = QVBoxLayout(metadata_widget)
         metadata_widget_layout.setContentsMargins(0, 0, 0, 0)
+        metadata_widget_layout.setSpacing(6)
         metadata_header_layout = QHBoxLayout()
         metadata_header_layout.setContentsMargins(0, 0, 0, 0)
-        metadata_header_layout.addWidget(QLabel('Table characteristics for this file:'))
+        metadata_header_layout.setSpacing(6)
+        metadata_header_layout.addWidget(QLabel('Review and edit table characteristics for this file (starting values come from genai_check.py):'))
         metadata_header_layout.addStretch()
-        self.suitablereason_button = QPushButton('Reason...')
+        self.suitablereason_button = QPushButton('Rationale...')
         self.suitablereason_button.clicked.connect(self.on_show_suitablereason)
         metadata_header_layout.addWidget(self.suitablereason_button)
         metadata_widget_layout.addLayout(metadata_header_layout)
@@ -580,9 +606,10 @@ class ReviewCheckWindow(QMainWindow):
         
         metadata_layout = QGridLayout()
         metadata_layout.setContentsMargins(0, 0, 0, 0)
+        metadata_layout.setVerticalSpacing(6)
         
         # Skip field (editable with spinbox)
-        skip_header_label = QLabel('Skip:')
+        skip_header_label = QLabel('Rows to skip:')
         metadata_layout.addWidget(skip_header_label, 0, 0)
         self.skip_spinbox = QSpinBox()
         self.skip_spinbox.setMinimum(0)
@@ -590,7 +617,7 @@ class ReviewCheckWindow(QMainWindow):
         self.skip_spinbox.valueChanged.connect(self.on_skip_changed)
         metadata_layout.addWidget(self.skip_spinbox, 0, 1)
         
-        self.gene_header_label = QLabel('Gene:')
+        self.gene_header_label = QLabel('Gene column:')
         metadata_layout.addWidget(self.gene_header_label, 1, 0)
         self.gene_label = QLabel('')
         metadata_layout.addWidget(self.gene_label, 1, 1)
@@ -601,7 +628,7 @@ class ReviewCheckWindow(QMainWindow):
         self.gene_choice_combo.currentIndexChanged.connect(self.on_gene_choice_changed)
         metadata_layout.addWidget(self.gene_choice_combo, 1, 4)
 
-        self.pval_header_label = QLabel('P-value:')
+        self.pval_header_label = QLabel('P-value column:')
         metadata_layout.addWidget(self.pval_header_label, 2, 0)
         self.pval_label = QLabel('')
         metadata_layout.addWidget(self.pval_label, 2, 1)
@@ -612,10 +639,32 @@ class ReviewCheckWindow(QMainWindow):
         self.pval_choice_combo.currentIndexChanged.connect(self.on_pval_choice_changed)
         metadata_layout.addWidget(self.pval_choice_combo, 2, 4)
         
-        self.lfc_header_label = QLabel('Log FC:')
+        self.lfc_header_label = QLabel('Log FC column:')
         metadata_layout.addWidget(self.lfc_header_label, 3, 0)
         self.lfc_label = QLabel('')
         metadata_layout.addWidget(self.lfc_label, 3, 1)
+
+        dynamic_header_labels = [
+            self.gene_header_label,
+            self.pval_header_label,
+            self.lfc_header_label,
+        ]
+        header_width_samples = [
+            '⚠ Gene column (not specified):',
+            '⚠ Gene column (not found):',
+            '⚠ Gene column (occurs 999 times):',
+            '⚠ P-value column (not specified):',
+            '⚠ P-value column (not found):',
+            '⚠ P-value column (occurs 999 times):',
+            '⚠ Log FC column (not specified):',
+            '⚠ Log FC column (not found):',
+            '⚠ Log FC column (occurs 999 times):',
+        ]
+        header_metrics = self.fontMetrics()
+        header_fixed_width = max(header_metrics.horizontalAdvance(text) for text in header_width_samples) + 8
+        for dynamic_header in dynamic_header_labels:
+            dynamic_header.setMinimumWidth(header_fixed_width)
+            dynamic_header.setMaximumWidth(header_fixed_width)
 
         self.lfc_choice_header_label = QLabel('Log FC column:')
         metadata_layout.addWidget(self.lfc_choice_header_label, 3, 3)
@@ -624,7 +673,7 @@ class ReviewCheckWindow(QMainWindow):
         metadata_layout.addWidget(self.lfc_choice_combo, 3, 4)
 
         # Bottom row controls
-        self.excl_checkbox = QCheckBox('Exclude this file from subsequent reviews')
+        self.excl_checkbox = QCheckBox('Exclude this file')
         self.excl_checkbox.stateChanged.connect(self.on_excl_changed)
         metadata_layout.addWidget(self.excl_checkbox, 4, 0, 1, 2, Qt.AlignmentFlag.AlignLeft)
 
@@ -634,7 +683,7 @@ class ReviewCheckWindow(QMainWindow):
         self.reason_input.textChanged.connect(self.on_reason_changed)
         metadata_layout.addWidget(self.reason_input, 4, 4)
 
-        metadata_layout.setHorizontalSpacing(16)
+        metadata_layout.setHorizontalSpacing(14)
         
         metadata_widget_layout.addLayout(metadata_layout)
         right_layout.addWidget(metadata_widget)
@@ -643,6 +692,7 @@ class ReviewCheckWindow(QMainWindow):
         preview_widget = QWidget()
         preview_layout = QVBoxLayout(preview_widget)
         preview_layout.setContentsMargins(0, 0, 0, 0)
+        preview_layout.setSpacing(6)
         
         # Preview section
         self.preview_header_label = QLabel('Preview (first 20 rows) of:')
@@ -650,6 +700,7 @@ class ReviewCheckWindow(QMainWindow):
         preview_layout.addWidget(self.preview_header_label)
         self.preview_table = QTableWidget()
         self.preview_table.setEditTriggers(QTableWidget.NoEditTriggers)  # Read-only
+        self.preview_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         preview_header = self.preview_table.horizontalHeader()
         if isinstance(preview_header, QHeaderView):
             preview_header.setStretchLastSection(True)
@@ -659,7 +710,7 @@ class ReviewCheckWindow(QMainWindow):
         right_layout.setStretch(0, 0)
         right_layout.setStretch(1, 1)
 
-        content_layout.addWidget(right_widget, 0, 1, 2, 1)
+        content_layout.addWidget(right_widget, 1, 1)
 
         content_layout.setColumnStretch(0, 2)
         content_layout.setColumnStretch(1, 8)
@@ -669,42 +720,17 @@ class ReviewCheckWindow(QMainWindow):
         main_layout.addLayout(content_layout)
         main_layout.addWidget(article_panel)
         
-        # Navigation and Save buttons
-        button_layout = QHBoxLayout()
-        button_layout.addStretch()
-        
-        prev_button = QPushButton('Previous')
-        prev_button.clicked.connect(self.on_previous)
-        button_layout.addWidget(prev_button)
-        
-        next_button = QPushButton('Next')
-        next_button.clicked.connect(self.on_next)
-        button_layout.addWidget(next_button)
-
-        reset_button = QPushButton('Reset Fields')
-        reset_button.clicked.connect(self.on_reset_fields)
-        button_layout.addWidget(reset_button)
-        
-        save_button = QPushButton('Save Changes')
-        save_button.clicked.connect(self.on_save_clicked)
-        save_button.setStyleSheet('background-color: #4CAF50; color: white; font-weight: bold;')
-        button_layout.addWidget(save_button)
-        
-        exit_button = QPushButton('Close')
-        exit_button.clicked.connect(self.on_close_clicked)
-        button_layout.addWidget(exit_button)
-        
-        main_layout.addLayout(button_layout)
-        
         # Load initial display
         self.update_display(0)
         self.file_list.setCurrentRow(0)
         self.adjust_initial_window_size()
+        QTimer.singleShot(0, self.adjust_preview_table_height)
         self.start_oa_pdf_prefetch()
     
     def update_display(self, idx: int, use_spinbox_value: bool = False):
         """Update all display fields for the given index"""
         self.current_index = idx
+        self.update_review_position_status()
         row = self.filtered.iloc[idx]
         self.update_article_metadata_display(row)
         
@@ -875,18 +901,70 @@ class ReviewCheckWindow(QMainWindow):
         
         # Gene field
         self.gene_label.setText(self.format_occurrence_display(gene_col, gene_count))
-        self.apply_field_match_style(self.gene_header_label, self.gene_label, 'Gene', gene_col, gene_found, gene_count)
+        self.apply_field_match_style(self.gene_header_label, self.gene_label, 'Gene column', gene_col, gene_found, gene_count)
         
         # P-value field
         self.pval_label.setText(self.format_occurrence_display(pval_col, pval_count))
-        self.apply_field_match_style(self.pval_header_label, self.pval_label, 'P-value', pval_col, pval_found, pval_count)
+        self.apply_field_match_style(self.pval_header_label, self.pval_label, 'P-value column', pval_col, pval_found, pval_count)
         
         # Log FC field
         self.lfc_label.setText(self.format_occurrence_display(lfc_col, lfc_count))
-        self.apply_field_match_style(self.lfc_header_label, self.lfc_label, 'Log FC', lfc_col, lfc_found, lfc_count)
+        self.apply_field_match_style(self.lfc_header_label, self.lfc_label, 'Log FC column', lfc_col, lfc_found, lfc_count)
         
         self.preview_header_label.setText(f'Preview (first 20 rows) of: {full_path}')
         self.update_dirty_state()
+
+    def update_review_position_status(self):
+        """Update bottom status text with current review position."""
+        current_one_based = self.current_index + 1
+        total_files = len(self.filtered)
+        status_text = f'Reviewing file {current_one_based} out of {total_files}'
+        for label in self.review_position_labels:
+            label.setText(status_text)
+
+    def build_navigation_row_widget(self) -> QWidget:
+        """Create a navigation controls row widget (status + nav/save/close buttons)."""
+        nav_widget = QWidget()
+        nav_widget.setObjectName('navigationRowPanel')
+        nav_widget.setStyleSheet(
+            '#navigationRowPanel {border: 1px solid #D1D5DB; border-radius: 6px;}'
+        )
+        nav_layout = QHBoxLayout(nav_widget)
+        nav_layout.setContentsMargins(6, 4, 6, 4)
+        nav_layout.setSpacing(6)
+        nav_layout.addStretch()
+
+        status_label = QLabel('')
+        total_files = len(self.filtered)
+        max_status_text = f'Reviewing file {total_files} out of {total_files}'
+        status_width = status_label.fontMetrics().horizontalAdvance(max_status_text) + 16
+        status_label.setMinimumWidth(status_width)
+        status_label.setMaximumWidth(status_width)
+        self.review_position_labels.append(status_label)
+        nav_layout.addWidget(status_label)
+
+        prev_button = QPushButton('Previous')
+        prev_button.clicked.connect(self.on_previous)
+        nav_layout.addWidget(prev_button)
+
+        next_button = QPushButton('Next')
+        next_button.clicked.connect(self.on_next)
+        nav_layout.addWidget(next_button)
+
+        reset_button = QPushButton('Reset Fields')
+        reset_button.clicked.connect(self.on_reset_fields)
+        nav_layout.addWidget(reset_button)
+
+        save_button = QPushButton('Save Changes')
+        save_button.clicked.connect(self.on_save_clicked)
+        save_button.setStyleSheet('background-color: #4CAF50; color: white; font-weight: bold;')
+        nav_layout.addWidget(save_button)
+
+        exit_button = QPushButton('Close')
+        exit_button.clicked.connect(self.on_close_clicked)
+        nav_layout.addWidget(exit_button)
+
+        return nav_widget
     
     def on_skip_changed(self, value):
         """Handle skip value change - update display live"""
@@ -1042,18 +1120,75 @@ class ReviewCheckWindow(QMainWindow):
         default_row_height = self.preview_table.verticalHeader().defaultSectionSize()
         font_based_row_height = self.preview_table.fontMetrics().height() + 12
         row_unit_height = max(default_row_height, font_based_row_height, 24)
-        rows_height = row_unit_height * visible_rows
+        if row_count > 0:
+            rows_height = sum(self.preview_table.rowHeight(i) for i in range(visible_rows))
+        else:
+            rows_height = row_unit_height * visible_rows
 
         header = self.preview_table.horizontalHeader()
         header_height = header.height() if header is not None else 0
 
-        scrollbar_height = self.style().pixelMetric(QStyle.PM_ScrollBarExtent)
+        horizontal_scrollbar = self.preview_table.horizontalScrollBar()
+        scrollbar_hint_height = horizontal_scrollbar.sizeHint().height() if horizontal_scrollbar is not None else 0
+        scrollbar_metric_height = self.preview_table.style().pixelMetric(QStyle.PM_ScrollBarExtent)
+        scrollbar_height = max(scrollbar_hint_height, scrollbar_metric_height) + 4
 
         frame_height = self.preview_table.frameWidth() * 2
         target_height = rows_height + header_height + frame_height + scrollbar_height + PREVIEW_EXTRA_PADDING_PX
 
         self.preview_table.setMinimumHeight(target_height)
         self.preview_table.setMaximumHeight(target_height)
+
+    def finalize_startup_layout(self):
+        """Run one startup-only layout pass after initial paint for accurate table chrome sizing."""
+        self.adjust_preview_table_height()
+        QApplication.processEvents()
+        self.adjust_initial_window_size()
+        QApplication.processEvents()
+
+        required_preview_height = self.preview_table.minimumHeight()
+        actual_preview_height = self.preview_table.height()
+        preview_height_deficit = required_preview_height - actual_preview_height
+        if preview_height_deficit > 0:
+            max_height = self.get_startup_max_height()
+            target_height = min(self.height() + preview_height_deficit + 6, max_height)
+            if target_height > self.height():
+                self.resize(self.width(), target_height)
+                QApplication.processEvents()
+                self.adjust_preview_table_height()
+
+        self.ensure_preview_scrollbar_visible_on_startup()
+        self.clamp_window_to_screen()
+
+    def ensure_preview_scrollbar_visible_on_startup(self):
+        """Grow window just enough so preview horizontal scrollbar is not clipped at startup."""
+        central = self.centralWidget()
+        if central is None:
+            return
+
+        max_height = self.get_startup_max_height()
+        for _ in range(3):
+            QApplication.processEvents()
+            horizontal_scrollbar = self.preview_table.horizontalScrollBar()
+            scrollbar_bottom = horizontal_scrollbar.mapTo(central, QPoint(0, horizontal_scrollbar.height())).y()
+            central_bottom = central.height()
+            deficit = scrollbar_bottom - central_bottom
+            if deficit <= 0:
+                break
+
+            target_height = min(self.height() + deficit + 8, max_height)
+            if target_height <= self.height():
+                break
+            self.resize(self.width(), target_height)
+            self.clamp_window_to_screen()
+
+    def showEvent(self, event):
+        """Run one post-show sizing pass so startup table chrome is fully accounted for."""
+        super().showEvent(event)
+        if self._post_show_height_fix_done:
+            return
+        self._post_show_height_fix_done = True
+        QTimer.singleShot(100, self.finalize_startup_layout)
 
     def adjust_initial_window_size(self):
         """Auto-size window at startup based on rendered layout and screen limits."""
@@ -1065,15 +1200,57 @@ class ReviewCheckWindow(QMainWindow):
 
         hint = central.sizeHint()
         target_width = max(1250, hint.width() + 60)
-        target_height = max(980, hint.height() + 100)
+        target_height = max(900, hint.height() + 100)
+        target_height += 8
 
         screen = QApplication.primaryScreen()
         if screen is not None:
             available = screen.availableGeometry()
             target_width = min(target_width, int(available.width() * 0.95))
-            target_height = min(target_height, int(available.height() * 0.95))
+            target_height = min(target_height, available.height())
+
+        target_height = min(target_height, self.get_startup_max_height())
 
         self.resize(target_width, target_height)
+        self.clamp_window_to_screen()
+
+    def clamp_window_to_screen(self):
+        """Keep the window fully inside the primary screen's available geometry."""
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+
+        available = screen.availableGeometry()
+        frame = self.frameGeometry()
+
+        target_x = frame.x()
+        target_y = frame.y()
+
+        if frame.width() > available.width():
+            self.resize(available.width(), self.height())
+            frame = self.frameGeometry()
+        if frame.height() > available.height():
+            self.resize(self.width(), available.height())
+            frame = self.frameGeometry()
+
+        if frame.left() < available.left():
+            target_x = available.left()
+        elif frame.right() > available.right():
+            target_x = available.right() - frame.width() + 1
+
+        if frame.top() < available.top():
+            target_y = available.top()
+        elif frame.bottom() > available.bottom():
+            target_y = available.bottom() - frame.height() + 1
+
+        self.move(target_x, target_y)
+
+    def get_startup_max_height(self) -> int:
+        """Return startup window height cap based on available screen height."""
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return self.height()
+        return screen.availableGeometry().height()
 
     def start_oa_pdf_prefetch(self):
         """Start background OA PDF availability check/download for PMIDs in review list."""
