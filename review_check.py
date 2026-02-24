@@ -8,6 +8,7 @@ import os
 import sys
 import argparse
 import json
+import html
 import shutil
 import importlib
 import threading
@@ -39,7 +40,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QLabel, QPushButton, QGridLayout, QTableWidget, 
                              QTableWidgetItem, QHeaderView, QSpinBox, 
                              QCheckBox, QComboBox, QMessageBox, QStyle, QLineEdit,
-                             QFileDialog, QDialog)
+                             QFileDialog, QDialog, QTextBrowser)
 from PyQt5.QtCore import Qt, pyqtSignal, QPoint
 from PyQt5.QtGui import QFont, QColor
 
@@ -50,10 +51,7 @@ DEFAULT_PREVIEW_VISIBLE_ROWS = 10
 PREVIEW_EXTRA_PADDING_PX = 36
 
 # Article panel display
-ABSTRACT_PREVIEW_MAX_LINES = 5
-ABSTRACT_PREVIEW_MAX_CHARS = 1200
-ABSTRACT_COLLAPSED_HEIGHT = 110
-ABSTRACT_EXPANDED_HEIGHT = 260
+ABSTRACT_BOX_HEIGHT = 260
 
 # Persisted settings
 SETTINGS_FILENAME = 'review_check_settings.json'
@@ -287,7 +285,6 @@ class ReviewCheckWindow(QMainWindow):
     pdf_ai_question_history: list[str]
     ai_answer_pmid: str
     current_article_abstract_text: str
-    article_abstract_expanded: bool
     has_unsaved_changes: bool
     
     def __init__(
@@ -317,7 +314,6 @@ class ReviewCheckWindow(QMainWindow):
         self.google_api_key = os.environ.get('GOOGLE_API_KEY', '').strip()
         self.current_article_abstract_text = ''
         ui_settings = load_ui_settings(self.settings_file)
-        self.article_abstract_expanded = bool(ui_settings.get('article_abstract_expanded', False))
         preview_rows_raw = ui_settings.get('preview_visible_rows', DEFAULT_PREVIEW_VISIBLE_ROWS)
         raw_pdf_ai_history = ui_settings.get('pdf_ai_question_history', [])
         self.pdf_ai_question_history = []
@@ -340,9 +336,6 @@ class ReviewCheckWindow(QMainWindow):
         settings_updated = False
         if ui_settings.get('preview_visible_rows') != self.preview_visible_rows:
             ui_settings['preview_visible_rows'] = self.preview_visible_rows
-            settings_updated = True
-        if 'article_abstract_expanded' not in ui_settings:
-            ui_settings['article_abstract_expanded'] = self.article_abstract_expanded
             settings_updated = True
         if ui_settings.get('pdf_ai_question_history') != self.pdf_ai_question_history:
             ui_settings['pdf_ai_question_history'] = list(self.pdf_ai_question_history)
@@ -411,23 +404,36 @@ class ReviewCheckWindow(QMainWindow):
         title_label.setContentsMargins(0, 0, 0, 0)
         main_layout.addWidget(title_label)
         
-        # Data directory and total entries on one line
-        info_layout = QHBoxLayout()
+        # Data directory, tracking file, and total entries on one bordered line
+        info_panel = QWidget()
+        info_panel.setObjectName('infoLinePanel')
+        info_panel.setStyleSheet(
+            '#infoLinePanel {border: 1px solid #D1D5DB; border-radius: 6px;}'
+        )
+        info_layout = QHBoxLayout(info_panel)
         info_layout.setSpacing(10)
-        info_layout.setContentsMargins(0, 0, 0, 0)
+        info_layout.setContentsMargins(6, 4, 6, 4)
         dir_label = QLabel(f'Data directory: {self.input_dir}')
         dir_label.setContentsMargins(0, 0, 0, 0)
         info_layout.addWidget(dir_label)
         info_layout.addStretch()
+        tracking_label = QLabel(f'Tracking file: {os.path.basename(self.tracking_file)}')
+        tracking_label.setContentsMargins(0, 0, 0, 0)
+        info_layout.addWidget(tracking_label)
+        info_layout.addStretch()
         self.total_label = QLabel(f'Total entries: {len(self.filtered)}')
         self.total_label.setContentsMargins(0, 0, 0, 0)
         info_layout.addWidget(self.total_label)
-        main_layout.addLayout(info_layout)
+        main_layout.addWidget(info_panel)
 
         # Article metadata panel (for selected PMID)
         article_panel = QWidget()
+        article_panel.setObjectName('articleLowerPanel')
+        article_panel.setStyleSheet(
+            '#articleLowerPanel {border: 1px solid #D1D5DB; border-radius: 6px;}'
+        )
         article_layout = QGridLayout(article_panel)
-        article_layout.setContentsMargins(0, 0, 0, 0)
+        article_layout.setContentsMargins(6, 6, 6, 6)
         article_layout.setHorizontalSpacing(8)
         article_layout.setVerticalSpacing(2)
 
@@ -454,18 +460,16 @@ class ReviewCheckWindow(QMainWindow):
         article_layout.addWidget(QLabel('Abstract:'), 2, 0, Qt.AlignmentFlag.AlignTop)
         self.article_abstract_preview = QTextEdit()
         self.article_abstract_preview.setReadOnly(True)
-        self.article_abstract_preview.setMaximumHeight(ABSTRACT_COLLAPSED_HEIGHT)
+        self.article_abstract_preview.setMinimumHeight(ABSTRACT_BOX_HEIGHT)
+        self.article_abstract_preview.setMaximumHeight(ABSTRACT_BOX_HEIGHT)
         article_layout.addWidget(self.article_abstract_preview, 2, 1)
 
-        self.toggle_abstract_button = QPushButton('Show more')
-        self.toggle_abstract_button.clicked.connect(self.on_toggle_abstract)
-        article_layout.addWidget(self.toggle_abstract_button, 3, 1, Qt.AlignmentFlag.AlignRight)
-
-        article_layout.addWidget(QLabel('Other metadata:'), 4, 0, Qt.AlignmentFlag.AlignTop)
-        self.article_other_metadata_text = QTextEdit()
+        article_layout.addWidget(QLabel('Other metadata:'), 3, 0, Qt.AlignmentFlag.AlignTop)
+        self.article_other_metadata_text = QTextBrowser()
         self.article_other_metadata_text.setReadOnly(True)
+        self.article_other_metadata_text.setOpenExternalLinks(True)
         self.article_other_metadata_text.setMaximumHeight(95)
-        article_layout.addWidget(self.article_other_metadata_text, 4, 1)
+        article_layout.addWidget(self.article_other_metadata_text, 3, 1)
 
         # RHS AI query interface (kept within existing panel height)
         article_layout.addWidget(QLabel('PDF question:'), 1, 2)
@@ -498,12 +502,13 @@ class ReviewCheckWindow(QMainWindow):
         article_layout.addWidget(QLabel('AI answer:'), 2, 2, Qt.AlignmentFlag.AlignTop)
         self.pdf_ai_answer_text = QTextEdit()
         self.pdf_ai_answer_text.setReadOnly(True)
-        self.pdf_ai_answer_text.setMaximumHeight(ABSTRACT_EXPANDED_HEIGHT)
+        self.pdf_ai_answer_text.setMinimumHeight(ABSTRACT_BOX_HEIGHT)
+        self.pdf_ai_answer_text.setMaximumHeight(ABSTRACT_BOX_HEIGHT)
         article_layout.addWidget(self.pdf_ai_answer_text, 2, 3, 1, 2, Qt.AlignmentFlag.AlignTop)
 
         self.pdf_ai_status_label = QLabel('')
         self.pdf_ai_status_label.setWordWrap(True)
-        article_layout.addWidget(self.pdf_ai_status_label, 4, 2, 1, 3)
+        article_layout.addWidget(self.pdf_ai_status_label, 3, 2, 1, 3)
 
         self.article_metadata_status_label = QLabel('')
         self.article_metadata_status_label.setStyleSheet('color: #b00020;')
@@ -517,8 +522,6 @@ class ReviewCheckWindow(QMainWindow):
         article_layout.setColumnStretch(3, 6)
         article_layout.setColumnStretch(4, 0)
 
-        main_layout.addWidget(article_panel)
-        
         # Main content grid: left file list, top-right preview, bottom-right metadata
         content_layout = QGridLayout()
         content_layout.setContentsMargins(0, 0, 0, 0)
@@ -664,6 +667,7 @@ class ReviewCheckWindow(QMainWindow):
         content_layout.setRowStretch(1, 1)
 
         main_layout.addLayout(content_layout)
+        main_layout.addWidget(article_panel)
         
         # Navigation and Save buttons
         button_layout = QHBoxLayout()
@@ -913,7 +917,10 @@ class ReviewCheckWindow(QMainWindow):
 
     def on_reason_changed(self, value):
         """Track reason text edits for the current row."""
-        self.pending_reason_values[self.current_index] = value.strip()
+        reason_text = value.strip()
+        if reason_text and not self.excl_checkbox.isChecked():
+            self.excl_checkbox.setChecked(True)
+        self.pending_reason_values[self.current_index] = reason_text
         self.update_dirty_state()
 
     def on_show_suitablereason(self):
@@ -1480,7 +1487,7 @@ class ReviewCheckWindow(QMainWindow):
     def format_other_metadata(self, article: Dict[str, str]) -> str:
         """Format non-primary article metadata fields for display."""
         if not article:
-            return '(other metadata not available)'
+            return '<i>(other metadata not available)</i>'
 
         excluded = {
             'pmid', 'pubmed_id', 'pubmedid', 'pubmed id',
@@ -1506,51 +1513,25 @@ class ReviewCheckWindow(QMainWindow):
             else:
                 display_key = key_clean
 
-            lines.append(f'{display_key}: {value_clean}')
+            if key_lower == 'doi':
+                doi_url = value_clean
+                if not doi_url.lower().startswith(('http://', 'https://')):
+                    doi_url = f'https://doi.org/{value_clean}'
+                value_html = (
+                    f'<a href="{html.escape(doi_url, quote=True)}">'
+                    f'{html.escape(value_clean)}</a>'
+                )
+            else:
+                value_html = html.escape(value_clean)
 
-        return '\n'.join(lines) if lines else '(other metadata not available)'
+            lines.append(f'<b>{html.escape(display_key)}:</b> {value_html}')
 
-    def format_abstract_preview(self, abstract_text: str) -> str:
-        """Return truncated abstract preview with line/length limits."""
-        if not abstract_text:
-            return ''
-
-        lines = abstract_text.splitlines()
-        was_truncated = False
-        if len(lines) > ABSTRACT_PREVIEW_MAX_LINES:
-            lines = lines[:ABSTRACT_PREVIEW_MAX_LINES]
-            was_truncated = True
-
-        preview = '\n'.join(lines).strip()
-        if len(preview) > ABSTRACT_PREVIEW_MAX_CHARS:
-            preview = preview[:ABSTRACT_PREVIEW_MAX_CHARS].rstrip()
-            was_truncated = True
-
-        if was_truncated and preview:
-            preview = f"{preview}..."
-
-        return preview
+        return '<br>'.join(lines) if lines else '<i>(other metadata not available)</i>'
 
     def refresh_article_abstract_display(self):
-        """Refresh abstract text/height based on expanded/collapsed state."""
-        if self.article_abstract_expanded:
-            display_text = self.current_article_abstract_text.strip()
-            self.article_abstract_preview.setMaximumHeight(ABSTRACT_EXPANDED_HEIGHT)
-            self.toggle_abstract_button.setText('Show less')
-            self.article_abstract_preview.setPlainText(display_text if display_text else '(abstract not available)')
-        else:
-            preview = self.format_abstract_preview(self.current_article_abstract_text)
-            self.article_abstract_preview.setMaximumHeight(ABSTRACT_COLLAPSED_HEIGHT)
-            self.toggle_abstract_button.setText('Show more')
-            self.article_abstract_preview.setPlainText(preview if preview else '(abstract not available)')
-
-    def on_toggle_abstract(self):
-        """Toggle abstract panel between compact preview and expanded view."""
-        self.article_abstract_expanded = not self.article_abstract_expanded
-        self.refresh_article_abstract_display()
-        self.update_ui_settings({
-            'article_abstract_expanded': self.article_abstract_expanded
-        })
+        """Refresh abstract text in a fixed-size box."""
+        display_text = self.current_article_abstract_text.strip()
+        self.article_abstract_preview.setPlainText(display_text if display_text else '(abstract not available)')
 
     def update_ui_settings(self, updates: Dict[str, Any]):
         """Merge updates into persisted UI settings without dropping existing keys."""
@@ -1624,7 +1605,7 @@ class ReviewCheckWindow(QMainWindow):
 
         self.article_title_value_label.setText(title_text if title_text else '(title not available)')
         self.refresh_article_abstract_display()
-        self.article_other_metadata_text.setPlainText(self.format_other_metadata(article))
+        self.article_other_metadata_text.setHtml(self.format_other_metadata(article))
 
         if self.article_metadata_status_message:
             self.article_metadata_status_label.setText(self.article_metadata_status_message)
