@@ -4,6 +4,8 @@ import time
 import sys
 import os
 import uuid
+import importlib
+from typing import Iterator
 from rdflib import Graph, Namespace
 import logging
 
@@ -360,12 +362,55 @@ OWL = Namespace("http://www.w3.org/2002/07/owl#")
 MONARCH = Namespace("https://monarchinitiative.org/")
 URN = Namespace("urn:uuid:")
 
-def load_graph(filename: str) -> Graph:
+
+class HDTGraphAdapter:
+    supports_sparql = False
+
+    def __init__(self, filename: str):
+        try:
+            HDTDocument = importlib.import_module("hdt").HDTDocument
+        except ImportError as exc:
+            raise ImportError(
+                "Loading .hdt graphs requires the optional 'hdt' package. Install it with 'pip install hdt'."
+            ) from exc
+
+        self.filename = filename
+        self._document = HDTDocument(filename)
+
+    @property
+    def triple_count(self) -> int:
+        return int(getattr(self._document, "total_triples", 0))
+
+    def iter_string_triples(self) -> Iterator[tuple[str, str, str]]:
+        triples, _ = self._document.search_triples("", "", "")
+        for subject, predicate, obj in triples:
+            yield str(subject), str(predicate), str(obj)
+
+
+def load_hdt_graph(filename: str) -> Graph | HDTGraphAdapter:
+    try:
+        rdflib_hdt = importlib.import_module("rdflib_hdt")
+    except ImportError:
+        return HDTGraphAdapter(filename)
+
+    optimize_sparql = getattr(rdflib_hdt, "optimize_sparql")
+    hdt_store_cls = getattr(rdflib_hdt, "HDTStore")
+
+    optimize_sparql()
+    store = hdt_store_cls(filename)
+    graph = Graph(store=store)
+    graph.hdt_path = filename
+    return graph
+
+def load_graph(filename: str) -> Graph | HDTGraphAdapter:
     """
-    Load a knowledge graph from an nt format file
-    :param filename: Path to the RDF graph file in NT format
-    :return: An rdflib Graph object containing the loaded RDF data
+    Load a knowledge graph from an nt or hdt format file
+    :param filename: Path to the RDF graph file
+    :return: An rdflib Graph object or an HDT-backed graph adapter
     """
+    if filename.lower().endswith(".hdt"):
+        return load_hdt_graph(filename)
+
     # Create a new RDF graph
     g = Graph()
     with open(filename, "rb") as f:

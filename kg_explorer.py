@@ -4,16 +4,26 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
+import math
 import os
+import re
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import QPoint, QPointF, Qt, pyqtSignal
+from PyQt5.QtGui import QBrush, QColor, QKeySequence, QPainter, QPen
 from PyQt5.QtWidgets import (
     QApplication,
     QComboBox,
     QFileDialog,
+    QGraphicsEllipseItem,
+    QGraphicsItem,
+    QGraphicsLineItem,
+    QGraphicsScene,
+    QGraphicsSimpleTextItem,
+    QGraphicsView,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -23,19 +33,25 @@ from PyQt5.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QShortcut,
     QSplitter,
+    QSpinBox,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTextBrowser,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
-from kg_services import GraphDataService, MetadataService, QueryResultTable, QueryService
+from kg_services import GraphDataService, MetadataService, NetworkNode, QueryResultTable, QueryService
 
 SETTINGS_FILE = "kg_explorer_settings.json"
 DEFAULT_VISIBLE_TRIPLES = 5000
+DEFAULT_NETWORK_MAX_EDGES = 250
+NETWORK_NODE_RADIUS = 18.0
+ITEM_USER_ROLE = 32
 
 
 class QueryWorker(threading.Thread):
@@ -60,6 +76,82 @@ class QueryWorker(threading.Thread):
             self.signal_target.query_result_signal.emit(table.headers, table.rows, "")
         except Exception as exc:
             self.signal_target.query_result_signal.emit([], [], str(exc))
+
+
+class NetworkGraphicsView(QGraphicsView):
+    def __init__(self, scene: QGraphicsScene):
+        super().__init__(scene)
+        self._is_panning = False
+        self._pan_start = QPoint()
+
+    def wheelEvent(self, event: Any) -> None:
+        if event.angleDelta().y() > 0:
+            self.scale(1.15, 1.15)
+        else:
+            self.scale(1 / 1.15, 1 / 1.15)
+
+    def mousePressEvent(self, event: Any) -> None:
+        if event.button() == Qt.MiddleButton:
+            self._is_panning = True
+            self._pan_start = event.pos()
+            self.setCursor(Qt.ClosedHandCursor)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: Any) -> None:
+        if self._is_panning:
+            delta = self.mapToScene(event.pos()) - self.mapToScene(self._pan_start)
+            self.translate(-delta.x(), -delta.y())
+            self._pan_start = event.pos()
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: Any) -> None:
+        if event.button() == Qt.MiddleButton and self._is_panning:
+            self._is_panning = False
+            self.setCursor(Qt.ArrowCursor)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
+class NetworkEdgeItem(QGraphicsLineItem):
+    def __init__(self, source_item: "NetworkNodeItem", target_item: "NetworkNodeItem", predicate: str):
+        super().__init__()
+        self.source_item = source_item
+        self.target_item = target_item
+        self.predicate = predicate
+        self.source_item.edge_items.append(self)
+        self.target_item.edge_items.append(self)
+        self.setPen(QPen(QColor("#8fa0b3"), 1.4))
+        self.setZValue(0)
+        self.setToolTip(f"Predicate: {predicate}")
+        self.update_position()
+
+    def update_position(self) -> None:
+        source_pos = self.source_item.scenePos()
+        target_pos = self.target_item.scenePos()
+        self.setLine(source_pos.x(), source_pos.y(), target_pos.x(), target_pos.y())
+
+
+class NetworkNodeItem(QGraphicsEllipseItem):
+    def __init__(self, radius: float):
+        super().__init__(-radius, -radius, radius * 2, radius * 2)
+        self.radius = radius
+        self.edge_items: List[NetworkEdgeItem] = []
+        self.label_item: Optional[QGraphicsSimpleTextItem] = None
+        self.setFlag(QGraphicsItem.ItemIsSelectable, True)
+        self.setFlag(QGraphicsItem.ItemIsMovable, True)
+
+    def itemChange(self, change: QGraphicsItem.GraphicsItemChange, value: Any) -> Any:
+        if change == QGraphicsItem.ItemPositionHasChanged:
+            for edge_item in self.edge_items:
+                edge_item.update_position()
+            if self.label_item is not None:
+                self.label_item.setPos(self.x() - 30, self.y() + self.radius + 2)
+        return super().itemChange(change, value)
 
 
 class KGExplorerWindow(QMainWindow):
@@ -92,6 +184,8 @@ class KGExplorerWindow(QMainWindow):
         self.all_triples: List[Tuple[str, str, str]] = []
         self.filtered_triples: List[Tuple[str, str, str]] = []
         self.current_query_result = QueryResultTable(headers=[], rows=[])
+        self.binning_metadata: Dict[str, Any] = {}
+        self._network_node_lookup: Dict[str, NetworkNode] = {}
 
         self.query_result_signal.connect(self.on_query_result)
         self._build_ui()
@@ -231,6 +325,45 @@ class KGExplorerWindow(QMainWindow):
         query_layout.addWidget(self.query_results_table, 1)
         self.tabs.addTab(query_tab, "Query Results")
 
+        network_tab = QWidget()
+        network_layout = QVBoxLayout(network_tab)
+
+        network_controls = QHBoxLayout()
+        network_controls.addWidget(QLabel("Max edges:"))
+        self.network_edge_limit = QSpinBox()
+        self.network_edge_limit.setRange(10, 5000)
+        self.network_edge_limit.setValue(DEFAULT_NETWORK_MAX_EDGES)
+        self.network_edge_limit.valueChanged.connect(self.refresh_network_view)
+        network_controls.addWidget(self.network_edge_limit)
+
+        self.network_summary_label = QLabel("Nodes: 0 | Edges: 0")
+        self.network_summary_label.setWordWrap(True)
+        network_controls.addWidget(self.network_summary_label, 1)
+
+        fit_button = QPushButton("Fit")
+        fit_button.clicked.connect(self.fit_network_view)
+        network_controls.addWidget(fit_button)
+
+        network_layout.addLayout(network_controls)
+
+        self.network_scene = QGraphicsScene(self)
+        self.network_scene.selectionChanged.connect(self.on_network_selection_changed)
+        self.network_view = NetworkGraphicsView(self.network_scene)
+        self.network_view.setRenderHint(QPainter.Antialiasing, True)
+        self.network_view.setToolTip("Wheel: zoom | Middle-drag: pan | Ctrl+= zoom in | Ctrl+- zoom out | Ctrl+0 fit")
+        network_layout.addWidget(self.network_view, 1)
+
+        self.network_zoom_in_shortcut = QShortcut(QKeySequence("Ctrl++"), self.network_view)
+        self.network_zoom_in_shortcut.activated.connect(lambda: self.zoom_network(1.15))
+        self.network_zoom_in_shortcut_alt = QShortcut(QKeySequence("Ctrl+="), self.network_view)
+        self.network_zoom_in_shortcut_alt.activated.connect(lambda: self.zoom_network(1.15))
+        self.network_zoom_out_shortcut = QShortcut(QKeySequence("Ctrl+-"), self.network_view)
+        self.network_zoom_out_shortcut.activated.connect(lambda: self.zoom_network(1 / 1.15))
+        self.network_zoom_reset_shortcut = QShortcut(QKeySequence("Ctrl+0"), self.network_view)
+        self.network_zoom_reset_shortcut.activated.connect(self.reset_network_zoom)
+
+        self.tabs.addTab(network_tab, "Network")
+
         return panel
 
     def _build_right_panel(self) -> QWidget:
@@ -239,16 +372,18 @@ class KGExplorerWindow(QMainWindow):
 
         row_group = QGroupBox("Selected Row Details")
         row_layout = QVBoxLayout(row_group)
-        self.detail_text = QTextEdit()
+        self.detail_text = QTextBrowser()
         self.detail_text.setReadOnly(True)
+        self.detail_text.setOpenExternalLinks(True)
         row_layout.addWidget(self.detail_text)
 
         metadata_group = QGroupBox("PMID Metadata")
         metadata_layout = QVBoxLayout(metadata_group)
         self.metadata_status_label = QLabel("")
         self.metadata_status_label.setWordWrap(True)
-        self.metadata_text = QTextEdit()
+        self.metadata_text = QTextBrowser()
         self.metadata_text.setReadOnly(True)
+        self.metadata_text.setOpenExternalLinks(True)
         metadata_layout.addWidget(self.metadata_status_label)
         metadata_layout.addWidget(self.metadata_text, 1)
 
@@ -331,6 +466,7 @@ class KGExplorerWindow(QMainWindow):
         self.graph = graph
         self.current_graph_path = graph_path
         self.all_triples = self.graph_service.triples_to_rows(graph)
+        self._load_binning_metadata(graph_path)
         self.filtered_triples = list(self.all_triples)
 
         if os.path.isdir(self.graph_dir):
@@ -344,6 +480,25 @@ class KGExplorerWindow(QMainWindow):
         self.graph_label.setText(f"Loaded: {graph_path} ({len(self.all_triples)} triples)")
         self.apply_filters()
 
+    def _load_binning_metadata(self, graph_path: str) -> None:
+        self.binning_metadata = {}
+
+        metadata_path = graph_path + ".metadata.json"
+        if not os.path.exists(metadata_path):
+            base_path = os.path.splitext(graph_path)[0]
+            metadata_path = base_path + ".metadata.json"
+
+        if not os.path.exists(metadata_path):
+            return
+
+        try:
+            with open(metadata_path, "r", encoding="utf-8") as handle:
+                loaded = json.load(handle)
+            if isinstance(loaded, dict):
+                self.binning_metadata = loaded
+        except Exception:
+            self.binning_metadata = {}
+
     def apply_filters(self) -> None:
         self.filtered_triples = self.graph_service.filter_triples(
             self.all_triples,
@@ -352,6 +507,7 @@ class KGExplorerWindow(QMainWindow):
             object_filter=self.object_filter.text(),
         )
         self._render_triples_table(self.filtered_triples)
+        self.refresh_network_view()
 
     def clear_filters(self) -> None:
         self.subject_filter.clear()
@@ -365,9 +521,9 @@ class KGExplorerWindow(QMainWindow):
         self.triples_table.setColumnCount(3)
 
         for row_idx, (subj, pred, obj) in enumerate(to_show):
-            self.triples_table.setItem(row_idx, 0, QTableWidgetItem(subj))
-            self.triples_table.setItem(row_idx, 1, QTableWidgetItem(pred))
-            self.triples_table.setItem(row_idx, 2, QTableWidgetItem(obj))
+            self.triples_table.setItem(row_idx, 0, self._make_table_item(subj, raw_value=subj))
+            self.triples_table.setItem(row_idx, 1, self._make_table_item(pred, raw_value=pred))
+            self.triples_table.setItem(row_idx, 2, self._make_table_item(obj, raw_value=obj))
 
         suffix = ""
         if len(triples) > DEFAULT_VISIBLE_TRIPLES:
@@ -421,9 +577,151 @@ class KGExplorerWindow(QMainWindow):
 
         for row_idx, row in enumerate(rows):
             for col_idx, value in enumerate(row):
-                self.query_results_table.setItem(row_idx, col_idx, QTableWidgetItem(value))
+                self.query_results_table.setItem(row_idx, col_idx, self._make_table_item(value, raw_value=value))
 
         self.query_results_table.resizeColumnsToContents()
+
+    def _make_table_item(self, value: str, raw_value: str = "") -> QTableWidgetItem:
+        raw = raw_value if raw_value else value
+        graph_service = self.__dict__.get("graph_service")
+        if graph_service is not None:
+            display = graph_service.display_value(raw)
+        else:
+            display = raw
+
+        item = QTableWidgetItem(display)
+        item.setData(ITEM_USER_ROLE, raw)
+
+        tooltip = self._format_bin_metadata([raw])
+        if tooltip:
+            item.setToolTip(tooltip)
+        return item
+
+    def refresh_network_view(self) -> None:
+        self.network_scene.clear()
+        self._network_node_lookup = {}
+
+        if not self.filtered_triples:
+            self.network_summary_label.setText("Nodes: 0 | Edges: 0")
+            return
+
+        model = self.graph_service.build_network_model(
+            self.filtered_triples,
+            max_edges=int(self.network_edge_limit.value()),
+            label_resolver=self.graph_service.display_value,
+        )
+        self._network_node_lookup = {node.identifier: node for node in model.nodes}
+        positions = self._compute_network_positions(model.nodes)
+
+        node_items: Dict[str, NetworkNodeItem] = {}
+
+        for node in model.nodes:
+            pos = positions.get(node.identifier)
+            if pos is None:
+                continue
+
+            node_item = NetworkNodeItem(NETWORK_NODE_RADIUS)
+            node_item.setBrush(QBrush(self._network_node_color(node)))
+            node_item.setPen(QPen(QColor("#314355"), 1.2))
+            node_item.setData(0, node.identifier)
+            node_item.setToolTip(self._network_node_tooltip(node))
+            node_item.setZValue(2)
+            node_item.setPos(pos)
+            self.network_scene.addItem(node_item)
+
+            label_item = QGraphicsSimpleTextItem(node.label)
+            label_item.setBrush(QBrush(QColor("#1f2933")))
+            label_item.setPos(pos.x() - 30, pos.y() + NETWORK_NODE_RADIUS + 2)
+            label_item.setZValue(3)
+            self.network_scene.addItem(label_item)
+            node_item.label_item = label_item
+            node_items[node.identifier] = node_item
+
+        for edge in model.edges:
+            source_item = node_items.get(edge.source)
+            target_item = node_items.get(edge.target)
+            if source_item is None or target_item is None:
+                continue
+
+            edge_item = NetworkEdgeItem(source_item, target_item, edge.predicate)
+            self.network_scene.addItem(edge_item)
+
+        self.network_summary_label.setText(f"Nodes: {len(model.nodes)} | Edges: {len(model.edges)}")
+        self.fit_network_view()
+
+    def zoom_network(self, factor: float) -> None:
+        self.network_view.scale(factor, factor)
+
+    def reset_network_zoom(self) -> None:
+        self.network_view.resetTransform()
+        self.fit_network_view()
+
+    def fit_network_view(self) -> None:
+        rect = self.network_scene.itemsBoundingRect()
+        if rect.isNull():
+            return
+        self.network_view.fitInView(rect.adjusted(-20, -20, 20, 20), Qt.KeepAspectRatio)
+
+    @staticmethod
+    def _compute_network_positions(nodes: List[NetworkNode]) -> Dict[str, QPointF]:
+        positions: Dict[str, QPointF] = {}
+        n = len(nodes)
+        if not n:
+            return positions
+
+        # Sunflower / Fibonacci spiral: evenly fills a disc with ~uniform spacing.
+        # golden_angle ≈ 137.5° ensures no two spokes align.
+        golden_angle = math.pi * (3.0 - math.sqrt(5.0))
+        scale = 95.0 * math.sqrt(n)
+
+        for index, node in enumerate(nodes):
+            r = scale * math.sqrt((index + 0.5) / n)
+            theta = index * golden_angle
+            positions[node.identifier] = QPointF(r * math.cos(theta), r * math.sin(theta))
+        return positions
+
+    @staticmethod
+    def _network_node_color(node: NetworkNode) -> QColor:
+        if node.pmid:
+            return QColor("#74b9ff")
+        if node.is_literal:
+            return QColor("#f7c59f")
+        return QColor("#7bd389")
+
+    def _network_node_tooltip(self, node: NetworkNode) -> str:
+        lines = [
+            f"Label: {node.label}",
+            f"Identifier: {node.identifier}",
+            f"Degree: {node.degree}",
+        ]
+        if node.pmid:
+            lines.append(f"PMID: {node.pmid}")
+
+        bin_info = self._format_bin_metadata([node.identifier])
+        if bin_info:
+            lines.append("")
+            lines.append(bin_info)
+        return "\n".join(lines)
+
+    def on_network_selection_changed(self) -> None:
+        selected_items = self.network_scene.selectedItems()
+        if not selected_items:
+            return
+
+        node_identifier = selected_items[0].data(0)
+        if not isinstance(node_identifier, str):
+            return
+
+        node = self._network_node_lookup.get(node_identifier)
+        if node is None:
+            return
+
+        values = [
+            f"Identifier: {node.identifier}",
+            f"Label: {node.label}",
+            f"Degree: {node.degree}",
+        ]
+        self._update_detail_and_metadata(values)
 
     def on_export_csv_clicked(self) -> None:
         headers = self.current_query_result.headers
@@ -460,9 +758,9 @@ class KGExplorerWindow(QMainWindow):
             return
 
         values = [
-            self._table_text(self.triples_table, row, 0),
-            self._table_text(self.triples_table, row, 1),
-            self._table_text(self.triples_table, row, 2),
+            self._table_value(self.triples_table, row, 0),
+            self._table_value(self.triples_table, row, 1),
+            self._table_value(self.triples_table, row, 2),
         ]
         self._update_detail_and_metadata(values)
 
@@ -473,7 +771,7 @@ class KGExplorerWindow(QMainWindow):
 
         values: List[str] = []
         for col in range(self.query_results_table.columnCount()):
-            values.append(self._table_text(self.query_results_table, row, col))
+            values.append(self._table_value(self.query_results_table, row, col))
         self._update_detail_and_metadata(values)
 
     @staticmethod
@@ -481,17 +779,54 @@ class KGExplorerWindow(QMainWindow):
         item = table.item(row, col)
         return item.text() if item else ""
 
+    @staticmethod
+    def _table_value(table: QTableWidget, row: int, col: int) -> str:
+        item = table.item(row, col)
+        if item is None:
+            return ""
+        raw = item.data(ITEM_USER_ROLE)
+        if isinstance(raw, str) and raw:
+            return raw
+        return item.text()
+
+    @staticmethod
+    def _linkify_text(text: str) -> str:
+        escaped = html.escape(text)
+        url_pattern = re.compile(r"(https?://[^\s<>\"]+)")
+
+        def repl(match: re.Match[str]) -> str:
+            url = match.group(1)
+            return f'<a href="{url}">{url}</a>'
+
+        linked = url_pattern.sub(repl, escaped)
+        return linked.replace("\n", "<br>")
+
+    def _set_linkified_text(self, browser: QTextBrowser, text: str) -> None:
+        browser.setHtml(
+            "<html><head><style>"
+            "body { font-family: Segoe UI, sans-serif; font-size: 11pt; }"
+            "a { color: #1e5fbf; text-decoration: underline; }"
+            "</style></head><body>"
+            f"{self._linkify_text(text)}"
+            "</body></html>"
+        )
+
     def _update_detail_and_metadata(self, values: List[str]) -> None:
-        self.detail_text.setPlainText("\n".join(values))
+        self._set_linkified_text(self.detail_text, "\n".join(values))
+
+        bin_info = self._format_bin_metadata(values)
+        if bin_info:
+            self._set_linkified_text(self.metadata_text, bin_info)
+            return
 
         pmid = MetadataService.extract_pmid_from_values(values)
         if not pmid:
-            self.metadata_text.setPlainText("No PMID detected in selected row")
+            self._set_linkified_text(self.metadata_text, "No PMID detected in selected row")
             return
 
         metadata = self.metadata_service.get_by_pmid(pmid)
         if not metadata:
-            self.metadata_text.setPlainText(f"PMID {pmid} not found in metadata")
+            self._set_linkified_text(self.metadata_text, f"PMID {pmid} not found in metadata")
             return
 
         ordered_keys = [
@@ -518,7 +853,51 @@ class KGExplorerWindow(QMainWindow):
                 continue
             lines.append(f"{key}: {value}")
 
-        self.metadata_text.setPlainText("\n".join(lines))
+        self._set_linkified_text(self.metadata_text, "\n".join(lines))
+
+    def _format_bin_metadata(self, values: List[str]) -> str:
+        if not self.binning_metadata:
+            return ""
+
+        bin_index: Optional[int] = None
+        for value in values:
+            match = re.search(r"\bbin_(\d+)\b", str(value))
+            if match:
+                bin_index = int(match.group(1))
+                break
+
+        if bin_index is None:
+            return ""
+
+        data_min = self.binning_metadata.get("data_min")
+        data_max = self.binning_metadata.get("data_max")
+        data_range = self.binning_metadata.get("data_range")
+        bin_count = self.binning_metadata.get("bin_count", 10)
+        total_values = self.binning_metadata.get("binned_values_count")
+
+        if not isinstance(data_min, (int, float)) or not isinstance(data_max, (int, float)):
+            return ""
+
+        if not isinstance(data_range, (int, float)):
+            data_range = data_max - data_min
+
+        if not isinstance(bin_count, int) or bin_count <= 0:
+            bin_count = 10
+
+        bin_width = data_range / bin_count if bin_count else 0
+        bin_lower = data_min + (bin_index * bin_width)
+        bin_upper = data_max if bin_index >= bin_count - 1 else data_min + ((bin_index + 1) * bin_width)
+
+        lines = [
+            f"Bin: bin_{bin_index}",
+            f"Approximate value range: {bin_lower:.4f} to {bin_upper:.4f}",
+            f"Global minimum: {data_min:.4f}",
+            f"Global maximum: {data_max:.4f}",
+            f"Global range: {data_range:.4f}",
+        ]
+        if isinstance(total_values, int):
+            lines.append(f"Binned numeric values: {total_values}")
+        return "\n".join(lines)
 
     def closeEvent(self, event: Any) -> None:
         self._save_settings()
@@ -619,6 +998,10 @@ def resolve_graph_arg(input_dir: str, graph_arg: str) -> str:
         return graph_candidate
 
     return graph_arg
+
+
+def prefer_hdt_graph_path(graph_path: str) -> str:
+    return graph_path
 
 
 def main() -> None:

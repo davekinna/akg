@@ -6,15 +6,20 @@ import os
 import re
 import csv
 import io
+import json
+from itertools import islice
+from collections import Counter
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from urllib.error import URLError
+from urllib.parse import quote
+from urllib.request import Request, urlopen
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
-from rdflib import Graph
-
 from akg import load_graph
 
 PMID_PATTERN = re.compile(r"(?:pubmed\.ncbi\.nlm\.nih\.gov/|\bpmid:)(\d{5,12})", re.IGNORECASE)
+HGNC_PATTERN = re.compile(r"(HGNC:\d+)", re.IGNORECASE)
 
 
 @dataclass
@@ -23,18 +28,166 @@ class QueryResultTable:
     rows: List[List[str]]
 
 
+@dataclass
+class NetworkNode:
+    identifier: str
+    label: str
+    degree: int
+    pmid: str = ""
+    is_literal: bool = False
+
+
+@dataclass
+class NetworkEdge:
+    source: str
+    target: str
+    predicate: str
+    label: str
+
+
+@dataclass
+class NetworkModel:
+    nodes: List[NetworkNode]
+    edges: List[NetworkEdge]
+    total_edges: int
+
+
 class GraphDataService:
     """Graph-focused data access service."""
 
-    def load_nt_graph(self, graph_path: str) -> Graph:
+    EDAM_BASE_URL = "http://edamontology.org/"
+    EDAM_OLS_TEMPLATE = "https://www.ebi.ac.uk/ols4/api/ontologies/edam/terms?iri={encoded_iri}"
+
+    def __init__(self):
+        self._edam_label_cache: Dict[str, Optional[str]] = {}
+        self._hgnc_symbol_cache: Dict[str, Optional[str]] = {}
+        self._hgnc_to_symbol: Dict[str, str] = {}
+        self._hgnc_mapping_loaded = False
+
+    def load_nt_graph(self, graph_path: str) -> Any:
         if not graph_path:
             raise ValueError("Graph path is required")
         if not os.path.exists(graph_path):
             raise FileNotFoundError(f"Graph file not found: {graph_path}")
         return load_graph(graph_path)
 
+    def resolve_edam_label(self, value: str) -> Optional[str]:
+        text = str(value).strip()
+        if not text.startswith(self.EDAM_BASE_URL):
+            return None
+
+        if text in self._edam_label_cache:
+            return self._edam_label_cache[text]
+
+        resolved_label: Optional[str] = None
+        encoded_iri = quote(text, safe="")
+        lookup_url = self.EDAM_OLS_TEMPLATE.format(encoded_iri=encoded_iri)
+
+        try:
+            request = Request(lookup_url, headers={"User-Agent": "akg-kg-explorer/1.0"})
+            with urlopen(request, timeout=2.5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+
+            embedded = payload.get("_embedded", {}) if isinstance(payload, dict) else {}
+            terms = embedded.get("terms", []) if isinstance(embedded, dict) else []
+            if terms and isinstance(terms[0], dict):
+                label = terms[0].get("label")
+                if isinstance(label, str) and label.strip():
+                    resolved_label = label.strip()
+        except (URLError, TimeoutError, ValueError, json.JSONDecodeError):
+            resolved_label = None
+
+        self._edam_label_cache[text] = resolved_label
+        return resolved_label
+
     @staticmethod
-    def triples_to_rows(graph: Graph) -> List[Tuple[str, str, str]]:
+    def extract_hgnc_id(value: str) -> str:
+        text = str(value).strip()
+        if not text:
+            return ""
+
+        match = HGNC_PATTERN.search(text)
+        if not match:
+            return ""
+        return match.group(1).upper()
+
+    def _ensure_hgnc_mapping(self) -> None:
+        if self._hgnc_mapping_loaded:
+            return
+
+        self._hgnc_mapping_loaded = True
+        candidate_paths = [
+            os.path.join(os.path.dirname(__file__), "hgnc_complete_set.json"),
+            os.path.join(os.getcwd(), "hgnc_complete_set.json"),
+        ]
+
+        hgnc_file = ""
+        for candidate in candidate_paths:
+            if os.path.exists(candidate):
+                hgnc_file = candidate
+                break
+
+        if not hgnc_file:
+            return
+
+        try:
+            with open(hgnc_file, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, ValueError, json.JSONDecodeError):
+            return
+
+        docs = payload.get("response", {}).get("docs", []) if isinstance(payload, dict) else []
+        if not isinstance(docs, list):
+            return
+
+        for gene in docs:
+            if not isinstance(gene, dict):
+                continue
+            hgnc_id = str(gene.get("hgnc_id", "")).strip().upper()
+            symbol = str(gene.get("symbol", "")).strip()
+            if hgnc_id and symbol:
+                self._hgnc_to_symbol[hgnc_id] = symbol
+
+    def resolve_hgnc_symbol(self, value: str) -> Optional[str]:
+        hgnc_id = self.extract_hgnc_id(value)
+        if not hgnc_id:
+            return None
+
+        if hgnc_id in self._hgnc_symbol_cache:
+            return self._hgnc_symbol_cache[hgnc_id]
+
+        self._ensure_hgnc_mapping()
+        symbol = self._hgnc_to_symbol.get(hgnc_id)
+        if symbol:
+            self._hgnc_symbol_cache[hgnc_id] = symbol
+            return symbol
+
+        self._hgnc_symbol_cache[hgnc_id] = None
+        return None
+
+    def display_value(self, value: str) -> str:
+        text = str(value).strip()
+        if not text:
+            return text
+
+        hgnc_symbol = self.resolve_hgnc_symbol(text)
+        if hgnc_symbol:
+            return hgnc_symbol
+
+        edam_label = self.resolve_edam_label(text)
+        if edam_label:
+            return edam_label
+        return text
+
+    @staticmethod
+    def supports_sparql(graph: Any) -> bool:
+        return bool(getattr(graph, "supports_sparql", True))
+
+    @staticmethod
+    def triples_to_rows(graph: Any) -> List[Tuple[str, str, str]]:
+        if hasattr(graph, "iter_string_triples"):
+            return list(graph.iter_string_triples())
+
         rows: List[Tuple[str, str, str]] = []
         for subj, pred, obj in graph:
             rows.append((str(subj), str(pred), str(obj)))
@@ -61,6 +214,88 @@ class GraphDataService:
                 continue
             filtered.append((subj, pred, obj))
         return filtered
+
+    @staticmethod
+    def compact_resource_label(value: str, max_length: int = 36) -> str:
+        text = str(value).strip()
+        if not text:
+            return "(blank)"
+
+        candidate = text
+        for separator in ("#", "/"):
+            if separator in candidate:
+                candidate = candidate.rsplit(separator, 1)[-1]
+
+        if candidate.startswith('"') and candidate.endswith('"') and len(candidate) >= 2:
+            candidate = candidate[1:-1]
+
+        if not candidate:
+            candidate = text
+
+        if len(candidate) <= max_length:
+            return candidate
+
+        return candidate[: max_length - 3] + "..."
+
+    @staticmethod
+    def looks_like_literal(value: str) -> bool:
+        text = str(value).strip()
+        if not text:
+            return True
+        return not (
+            text.startswith("http://")
+            or text.startswith("https://")
+            or text.startswith("urn:")
+            or text.startswith("pmid:")
+        )
+
+    def build_network_model(
+        self,
+        triples: Iterable[Tuple[str, str, str]],
+        max_edges: int = 250,
+        label_resolver: Optional[Callable[[str], str]] = None,
+    ) -> NetworkModel:
+        limited_triples = list(islice(triples, max_edges))
+
+        degrees: Counter[str] = Counter()
+        node_map: Dict[str, NetworkNode] = {}
+        edges: List[NetworkEdge] = []
+
+        for subj, pred, obj in limited_triples:
+            degrees[subj] += 1
+            degrees[obj] += 1
+
+            if subj not in node_map:
+                node_map[subj] = NetworkNode(
+                    identifier=subj,
+                    label=self.compact_resource_label(label_resolver(subj) if label_resolver else subj),
+                    degree=0,
+                    pmid=MetadataService.normalize_pmid(subj),
+                    is_literal=self.looks_like_literal(subj),
+                )
+            if obj not in node_map:
+                node_map[obj] = NetworkNode(
+                    identifier=obj,
+                    label=self.compact_resource_label(label_resolver(obj) if label_resolver else obj),
+                    degree=0,
+                    pmid=MetadataService.normalize_pmid(obj),
+                    is_literal=self.looks_like_literal(obj),
+                )
+
+            edges.append(
+                NetworkEdge(
+                    source=subj,
+                    target=obj,
+                    predicate=pred,
+                    label=self.compact_resource_label(label_resolver(pred) if label_resolver else pred),
+                )
+            )
+
+        for identifier, node in node_map.items():
+            node.degree = degrees.get(identifier, 0)
+
+        nodes = sorted(node_map.values(), key=lambda node: (-node.degree, node.label.lower(), node.identifier.lower()))
+        return NetworkModel(nodes=nodes, edges=edges, total_edges=len(limited_triples))
 
 
 class QueryService:
@@ -95,7 +330,10 @@ class QueryService:
 
         return rendered
 
-    def run_query(self, graph: Graph, query_name: str, pmid: str = "") -> QueryResultTable:
+    def run_query(self, graph: Any, query_name: str, pmid: str = "") -> QueryResultTable:
+        if not GraphDataService.supports_sparql(graph):
+            raise ValueError("SPARQL queries are not available for .hdt graphs. Load the .nt graph to run queries.")
+
         query_text = self.load_query_text(query_name)
         query_text = self.render_query(query_text, pmid=pmid)
         raw_results: Any = graph.query(query_text)

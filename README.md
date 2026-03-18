@@ -18,6 +18,18 @@ git checkout dev
 ```
 ... and then return to the parent directory (cd ..), the examples below do this to avoid mixing code and data. With the current immature version of the code, you may need to install modules to run the code.
 
+For faster graph browsing in kg_explorer.py, the loader can also open .hdt files. If you want to keep SPARQL querying over .hdt graphs, install the rdflib-hdt package:
+```
+pip install rdflib-hdt
+```
+If you only need fast triple browsing, the simpler hdt package is enough:
+```
+pip install hdt
+```
+With rdflib-hdt installed, kg_explorer.py will load .hdt files through an rdflib store and keep SPARQL support. Without it, the explorer falls back to read-only HDT browsing and disables SPARQL for .hdt loads.
+
+To emit .hdt files from bin_edam.py, use --output-format hdt or --output-format both. HDT writing currently relies on the external rdf2hdt executable from the HDT toolchain.
+
 ## Workflow for using the code
 This section is an outline of the project and available code.  I assume here you are running from the directory level above the source code (which is in directory akg).
 
