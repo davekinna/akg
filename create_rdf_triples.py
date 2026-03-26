@@ -171,8 +171,13 @@ def process_regular_csv(csv_file_path:str, matched_genes, unmatched_genes, graph
         for i, line in enumerate(csvfile):
 #            data_fields = line.strip().strip('"').split(',')
 # attempt 3 to get this robust. The header line is working so just use csv_reader to get the data lines.
+            # Strip outer wrapping quotes (data_convert.py wraps each entire row in double-quotes).
+            # This mirrors the header parsing which also does strip('"') before splitting.
+            stripped = line.strip()
+            if stripped.startswith('"') and stripped.endswith('"'):
+                stripped = stripped[1:-1]
             # Use io.StringIO to treat the string like a file
-            line_as_file = io.StringIO(line)
+            line_as_file = io.StringIO(stripped)
 
             # The csv.reader does all the hard work for you
             csv_reader = csv.reader(line_as_file)
@@ -253,7 +258,7 @@ def process_regular_csv(csv_file_path:str, matched_genes, unmatched_genes, graph
         with open(filename_row_uri_labels_path, 'w') as f:
             json.dump(row_uri_labels, f)
     else:
-        logging.warning(f"Warning: graph_folder not provided, row_uri_labels not saved to {filename_row_uri_labels_path}")
+        logging.warning(f"Warning: graph_file not provided, row_uri_labels not saved")
 
     return matched_genes, unmatched_genes
 
@@ -265,6 +270,14 @@ def test_unicode_bug_1():
     matched_genes=0
     unmatched_genes=0
     matched_genes, unmatched_genes = process_regular_csv(csv_file_path, matched_genes, unmatched_genes)
+
+
+def resolve_per_file_graph_output_path(graph_folder: str, pmid: str, source_filename: str) -> str:
+    """Return the destination path for a per-file graph artifact."""
+    pmid_graph_dir = os.path.join(graph_folder, str(pmid))
+    os.makedirs(pmid_graph_dir, exist_ok=True)
+    graph_file_name = f"graph_{source_filename}.nt"
+    return os.path.join(pmid_graph_dir, graph_file_name)
     
 
 
@@ -382,8 +395,9 @@ if __name__ == '__main__':
 
                     mg_before = matched_genes
                     ug_before = unmatched_genes
-                    graph_file_name = f"graph_{file}.nt"
-                    graph_file = os.path.join(root, graph_file_name)
+                    graph_file = resolve_per_file_graph_output_path(graph_folder, pmid, file)
+                    graph_file_name = os.path.basename(graph_file)
+                    graph_file_dir = os.path.dirname(graph_file)
 
                     matched_genes, unmatched_genes = process_regular_csv(file_path, matched_genes, unmatched_genes, graph, graph_file, gene_name, pval_name, lfc_name)
                     logging.info(f"Processing file: {file_path} complete")
@@ -395,7 +409,7 @@ if __name__ == '__main__':
                     # do this inside the loop so that we can keep track of the progress of an aborted run
                     save_tracking(tdf, tracking_file)
                     # Add the new file to the local tracking DataFrame
-                    new_entry = tracking_entry(4, root, pmid, graph_file_name, False, True, file_path, False, False, '', 0, '', '', '', graph_file_name, 0, 0, False, '')
+                    new_entry = tracking_entry(4, graph_file_dir, pmid, graph_file_name, False, True, file_path, False, False, '', 0, '', '', '', graph_file, 0, 0, False, '')
 
                     local_tdf = add_to_tracking(local_tdf, new_entry)
 

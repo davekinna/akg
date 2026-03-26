@@ -802,7 +802,13 @@ class KGExplorerWindow(QMainWindow):
         )
 
     def _update_detail_and_metadata(self, values: List[str]) -> None:
-        self._set_linkified_text(self.detail_text, "\n".join(values))
+        # Enhance UUID references with human-readable names
+        enhanced_values = self.graph_service.enhance_uuid_values(
+            values,
+            input_dir=self.input_dir,
+            graph_path=self.current_graph_path,
+        )
+        self._set_linkified_text(self.detail_text, "\n".join(enhanced_values))
 
         bin_info = self._format_bin_metadata(values)
         if bin_info:

@@ -63,6 +63,10 @@ class GraphDataService:
         self._hgnc_symbol_cache: Dict[str, Optional[str]] = {}
         self._hgnc_to_symbol: Dict[str, str] = {}
         self._hgnc_mapping_loaded = False
+        self._filename_uuid_map: Dict[str, str] = {}
+        self._row_uri_labels_cache: Dict[str, Dict[str, str]] = {}
+        self._uuid_maps_loaded = False
+        self._uuid_map_source_path = ""
 
     def load_nt_graph(self, graph_path: str) -> Any:
         if not graph_path:
@@ -310,6 +314,279 @@ class GraphDataService:
         if isinstance(total_values, int):
             lines.append(f"Binned numeric values: {total_values}")
         return "\n".join(lines)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # UUID Resolution Methods
+    # ─────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _extract_uuid(text: str) -> Optional[str]:
+        """Extract urn:uuid:XXX from text, returning just the UUID part."""
+        match = re.search(r"urn:uuid:([a-f0-9\-]+)", str(text), re.IGNORECASE)
+        if match:
+            return match.group(1).lower()
+        return None
+
+    def load_uuid_maps(self, input_dir: str = "", graph_path: str = "") -> None:
+        """
+        Load filename_uuid_map.json from the standard location.
+        This builds reverse map for UUID → filename lookup.
+        """
+        candidate_paths: List[str] = []
+        if input_dir:
+            candidate_paths.append(os.path.join(input_dir, "graph", "filename_uuid_map.json"))
+            candidate_paths.append(os.path.join(input_dir, "filename_uuid_map.json"))
+
+        if graph_path:
+            graph_dir = os.path.dirname(os.path.abspath(graph_path))
+            input_guess = os.path.dirname(graph_dir)
+            candidate_paths.append(os.path.join(graph_dir, "filename_uuid_map.json"))
+            candidate_paths.append(os.path.join(input_guess, "graph", "filename_uuid_map.json"))
+            candidate_paths.append(os.path.join(input_guess, "filename_uuid_map.json"))
+
+        seen: set[str] = set()
+        deduped_candidates: List[str] = []
+        for path in candidate_paths:
+            normalized = os.path.normpath(path)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            deduped_candidates.append(path)
+
+        map_path = ""
+        for candidate in deduped_candidates:
+            if os.path.exists(candidate):
+                map_path = candidate
+                break
+
+        if self._uuid_maps_loaded and map_path == self._uuid_map_source_path:
+            return
+
+        self._uuid_maps_loaded = True
+        self._uuid_map_source_path = map_path
+        self._filename_uuid_map = {}
+
+        if not map_path:
+            return
+
+        try:
+            with open(map_path, "r", encoding="utf-8") as f:
+                forward_map = json.load(f)
+            # Build reverse map: UUID → filename
+            if isinstance(forward_map, dict):
+                self._filename_uuid_map = {
+                    str(v).lower(): str(k)
+                    for k, v in forward_map.items()
+                    if isinstance(v, str)
+                }
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+
+    def resolve_uuid_to_filename(self, uuid_str: str) -> Optional[str]:
+        """Resolve a UUID to its filename (e.g. 'expdata_TableS6')."""
+        if not self._uuid_maps_loaded:
+            return None
+        return self._filename_uuid_map.get(uuid_str.lower())
+
+    @staticmethod
+    def _extract_graph_pmids(graph_path: str) -> List[str]:
+        """Extract PMID tokens from combined graph filenames."""
+        graph_name = os.path.basename(graph_path)
+        stem = graph_name
+        if stem.endswith(".nt"):
+            stem = stem[:-3]
+        if stem.endswith("_binned"):
+            stem = stem[:-7]
+        if not stem.startswith("combined_"):
+            return []
+        suffix = stem[len("combined_"):]
+        return [part for part in suffix.split("_") if part.isdigit()]
+
+    def _candidate_row_label_dirs(self, graph_path: str, input_dir: str = "") -> List[str]:
+        candidates: List[str] = []
+
+        graph_dir = os.path.dirname(os.path.abspath(graph_path)) if graph_path else ""
+        if graph_dir:
+            candidates.append(graph_dir)
+
+        if input_dir:
+            for pmid in self._extract_graph_pmids(graph_path):
+                candidates.append(os.path.join(input_dir, "graph", pmid))
+            supp_data_dir = os.path.join(input_dir, "supp_data")
+            for pmid in self._extract_graph_pmids(graph_path):
+                candidates.append(os.path.join(supp_data_dir, pmid))
+
+        deduped: List[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            normalized = os.path.normpath(candidate)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            deduped.append(candidate)
+        return deduped
+
+    @staticmethod
+    def _candidate_graph_sidecar_paths(graph_path: str) -> List[str]:
+        candidates: List[str] = []
+        if not graph_path:
+            return candidates
+
+        normalized = os.path.abspath(graph_path)
+        candidates.append(normalized + ".row_uri_labels.json")
+
+        if normalized.endswith("_binned.nt"):
+            unbinned = normalized[: -len("_binned.nt")] + ".nt"
+            candidates.append(unbinned + ".row_uri_labels.json")
+
+        deduped: List[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            normalized_candidate = os.path.normpath(candidate)
+            if normalized_candidate in seen:
+                continue
+            seen.add(normalized_candidate)
+            deduped.append(candidate)
+        return deduped
+
+    @staticmethod
+    def _display_row_source_name(filename: str) -> str:
+        display_name = str(filename)
+        if display_name.startswith("graph_clean_"):
+            display_name = display_name[len("graph_clean_"):]
+        elif display_name.startswith("graph_"):
+            display_name = display_name[len("graph_"):]
+
+        for suffix in (".csv.nt", ".tsv.nt", ".xlsx.nt", ".xls.nt", ".nt"):
+            if display_name.endswith(suffix):
+                display_name = display_name[: -len(suffix)]
+                break
+
+        return display_name
+
+    def _row_context_from_sidecar_entry(self, candidate: str, label: Any) -> Dict[str, Any]:
+        if isinstance(label, dict):
+            filename = str(label.get("filename") or label.get("source_filename") or "")
+            row_label = str(label.get("row_label") or label.get("label") or "")
+            row_index_value = label.get("row_index")
+            row_index = str(row_index_value) if row_index_value not in (None, "") else row_label
+        else:
+            filename = ""
+            row_label = str(label)
+            row_index = row_label
+
+        if not filename:
+            if candidate.endswith("_row_uri_labels.json"):
+                filename = candidate[: -len("_row_uri_labels.json")]
+            elif candidate.endswith(".row_uri_labels.json"):
+                filename = candidate[: -len(".row_uri_labels.json")]
+            else:
+                filename = candidate
+
+        if not row_label:
+            row_label = str(label)
+
+        row_match = re.search(r"row\s+(\d+)", row_label, re.IGNORECASE)
+        if row_match:
+            row_index = row_match.group(1)
+
+        return {
+            "filename": filename,
+            "display_filename": self._display_row_source_name(filename),
+            "row_label": row_label,
+            "row_index": row_index,
+        }
+
+    def resolve_uuid_to_row_context(self, uuid_str: str, graph_path: str, input_dir: str = "") -> Optional[Dict[str, Any]]:
+        """
+        Attempt to find row context (filename, row index) for a row UUID.
+        Searches for {graph_name}_row_uri_labels.json sidecars.
+        Returns: {filename, row_index, row_label} or None.
+        """
+        uuid_clean = self._extract_uuid(uuid_str) or str(uuid_str).lower()
+
+        for sidecar_path in self._candidate_graph_sidecar_paths(graph_path):
+            if not os.path.exists(sidecar_path):
+                continue
+            candidate_name = os.path.basename(sidecar_path)
+            try:
+                with open(sidecar_path, "r", encoding="utf-8") as f:
+                    row_labels = json.load(f)
+                if isinstance(row_labels, dict):
+                    for urn_key, label in row_labels.items():
+                        extracted_uuid = self._extract_uuid(urn_key)
+                        if extracted_uuid == uuid_clean:
+                            return self._row_context_from_sidecar_entry(candidate_name, label)
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+
+        candidate_dirs = self._candidate_row_label_dirs(graph_path, input_dir=input_dir)
+        if not candidate_dirs:
+            return None
+
+        for candidate_dir in candidate_dirs:
+            try:
+                candidates = [
+                    f
+                    for f in os.listdir(candidate_dir)
+                    if f.endswith("_row_uri_labels.json") or f.endswith(".row_uri_labels.json")
+                ]
+            except (OSError, FileNotFoundError):
+                candidates = []
+
+            for candidate in candidates:
+                full_path = os.path.join(candidate_dir, candidate)
+                try:
+                    with open(full_path, "r", encoding="utf-8") as f:
+                        row_labels = json.load(f)
+                    if isinstance(row_labels, dict):
+                        # row_labels keys are URNs like "urn:uuid:...", values are like "row 42"
+                        for urn_key, label in row_labels.items():
+                            extracted_uuid = self._extract_uuid(urn_key)
+                            if extracted_uuid == uuid_clean:
+                                return self._row_context_from_sidecar_entry(candidate, label)
+                except (OSError, ValueError, json.JSONDecodeError):
+                    continue
+
+        return None
+
+    def enhance_uuid_values(self, values: List[str], input_dir: str = "", graph_path: str = "") -> List[str]:
+        """
+        Replace urn:uuid:XXX with human-readable names where possible.
+        Returns new list with enhanced values.
+        """
+        if not values:
+            return values
+
+        # Ensure UUID maps are loaded
+        if input_dir or graph_path:
+            self.load_uuid_maps(input_dir=input_dir, graph_path=graph_path)
+
+        enhanced = []
+        for value in values:
+            uuid_match = self._extract_uuid(value)
+            if not uuid_match:
+                enhanced.append(value)
+                continue
+
+            # Try filename lookup first
+            filename = self.resolve_uuid_to_filename(uuid_match)
+            if filename:
+                enhanced.append(f"{value} [{filename}]")
+                continue
+
+            # Try row context lookup
+            row_context = self.resolve_uuid_to_row_context(value, graph_path, input_dir=input_dir)
+            if row_context:
+                enhanced.append(
+                    f"{value} [from {row_context.get('display_filename', row_context['filename'])}, {row_context['row_label']}]"
+                )
+                continue
+
+            # If nothing matched, keep original
+            enhanced.append(value)
+
+        return enhanced
 
     def build_network_model(
         self,
