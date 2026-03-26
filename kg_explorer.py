@@ -55,27 +55,33 @@ ITEM_USER_ROLE = 32
 
 
 class QueryWorker(threading.Thread):
+    """Background thread for running a SPARQL query.
+
+    *callback* is called with ``(headers, rows, error_message)`` on completion.
+    Using a plain callable keeps this class independent of any GUI framework.
+    """
+
     def __init__(
         self,
         graph: Any,
         query_name: str,
         pmid: str,
         query_service: QueryService,
-        signal_target: "KGExplorerWindow",
+        callback: Any,
     ):
         super().__init__(daemon=True)
         self.graph = graph
         self.query_name = query_name
         self.pmid = pmid
         self.query_service = query_service
-        self.signal_target = signal_target
+        self.callback = callback
 
     def run(self) -> None:
         try:
             table = self.query_service.run_query(self.graph, self.query_name, pmid=self.pmid)
-            self.signal_target.query_result_signal.emit(table.headers, table.rows, "")
+            self.callback(table.headers, table.rows, "")
         except Exception as exc:
-            self.signal_target.query_result_signal.emit([], [], str(exc))
+            self.callback([], [], str(exc))
 
 
 class NetworkGraphicsView(QGraphicsView):
@@ -481,23 +487,7 @@ class KGExplorerWindow(QMainWindow):
         self.apply_filters()
 
     def _load_binning_metadata(self, graph_path: str) -> None:
-        self.binning_metadata = {}
-
-        metadata_path = graph_path + ".metadata.json"
-        if not os.path.exists(metadata_path):
-            base_path = os.path.splitext(graph_path)[0]
-            metadata_path = base_path + ".metadata.json"
-
-        if not os.path.exists(metadata_path):
-            return
-
-        try:
-            with open(metadata_path, "r", encoding="utf-8") as handle:
-                loaded = json.load(handle)
-            if isinstance(loaded, dict):
-                self.binning_metadata = loaded
-        except Exception:
-            self.binning_metadata = {}
+        self.binning_metadata = self.graph_service.load_binning_metadata(graph_path)
 
     def apply_filters(self) -> None:
         self.filtered_triples = self.graph_service.filter_triples(
@@ -552,7 +542,7 @@ class KGExplorerWindow(QMainWindow):
             query_name=query_name,
             pmid=pmid,
             query_service=self.query_service,
-            signal_target=self,
+            callback=self.query_result_signal.emit,
         )
         worker.start()
         self._active_worker = worker
@@ -858,46 +848,10 @@ class KGExplorerWindow(QMainWindow):
     def _format_bin_metadata(self, values: List[str]) -> str:
         if not self.binning_metadata:
             return ""
-
-        bin_index: Optional[int] = None
-        for value in values:
-            match = re.search(r"\bbin_(\d+)\b", str(value))
-            if match:
-                bin_index = int(match.group(1))
-                break
-
+        bin_index = self.graph_service.find_bin_index(values)
         if bin_index is None:
             return ""
-
-        data_min = self.binning_metadata.get("data_min")
-        data_max = self.binning_metadata.get("data_max")
-        data_range = self.binning_metadata.get("data_range")
-        bin_count = self.binning_metadata.get("bin_count", 10)
-        total_values = self.binning_metadata.get("binned_values_count")
-
-        if not isinstance(data_min, (int, float)) or not isinstance(data_max, (int, float)):
-            return ""
-
-        if not isinstance(data_range, (int, float)):
-            data_range = data_max - data_min
-
-        if not isinstance(bin_count, int) or bin_count <= 0:
-            bin_count = 10
-
-        bin_width = data_range / bin_count if bin_count else 0
-        bin_lower = data_min + (bin_index * bin_width)
-        bin_upper = data_max if bin_index >= bin_count - 1 else data_min + ((bin_index + 1) * bin_width)
-
-        lines = [
-            f"Bin: bin_{bin_index}",
-            f"Approximate value range: {bin_lower:.4f} to {bin_upper:.4f}",
-            f"Global minimum: {data_min:.4f}",
-            f"Global maximum: {data_max:.4f}",
-            f"Global range: {data_range:.4f}",
-        ]
-        if isinstance(total_values, int):
-            lines.append(f"Binned numeric values: {total_values}")
-        return "\n".join(lines)
+        return self.graph_service.format_bin_description(bin_index, self.binning_metadata)
 
     def closeEvent(self, event: Any) -> None:
         self._save_settings()

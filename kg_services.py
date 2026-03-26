@@ -249,6 +249,68 @@ class GraphDataService:
             or text.startswith("pmid:")
         )
 
+    @staticmethod
+    def load_binning_metadata(graph_path: str) -> Dict[str, Any]:
+        """Load the .metadata.json sidecar for *graph_path*.  Returns {} on any failure."""
+        metadata_path = graph_path + ".metadata.json"
+        if not os.path.exists(metadata_path):
+            base_path = os.path.splitext(graph_path)[0]
+            metadata_path = base_path + ".metadata.json"
+
+        if not os.path.exists(metadata_path):
+            return {}
+
+        try:
+            with open(metadata_path, "r", encoding="utf-8") as handle:
+                loaded = json.load(handle)
+            if isinstance(loaded, dict):
+                return loaded
+        except Exception:
+            pass
+        return {}
+
+    @staticmethod
+    def find_bin_index(values: List[str]) -> Optional[int]:
+        """Return the first bin index found in *values* (e.g. 'bin_3' -> 3), or None."""
+        for value in values:
+            match = re.search(r"\bbin_(\d+)\b", str(value))
+            if match:
+                return int(match.group(1))
+        return None
+
+    @staticmethod
+    def format_bin_description(bin_index: int, binning_metadata: Dict[str, Any]) -> str:
+        """Return a human-readable description of *bin_index* from *binning_metadata*, or ''."""
+        data_min = binning_metadata.get("data_min")
+        data_max = binning_metadata.get("data_max")
+        data_range = binning_metadata.get("data_range")
+        bin_count = binning_metadata.get("bin_count", 10)
+        total_values = binning_metadata.get("binned_values_count")
+
+        if not isinstance(data_min, (int, float)) or not isinstance(data_max, (int, float)):
+            return ""
+
+        if not isinstance(data_range, (int, float)):
+            data_range = data_max - data_min
+
+        if not isinstance(bin_count, int) or bin_count <= 0:
+            bin_count = 10
+
+        bin_width = data_range / bin_count if bin_count else 0
+        bin_lower = data_min + (bin_index * bin_width)
+        bin_upper = data_max if bin_index >= bin_count - 1 else data_min + ((bin_index + 1) * bin_width)
+
+        lines = [
+            f"Bin: bin_{bin_index}",
+            f"Approximate value range: {bin_lower:.4f} to {bin_upper:.4f}",
+            f"Global minimum: {data_min:.4f}",
+            f"Global maximum: {data_max:.4f}",
+            f"Global range: {data_range:.4f}",
+        ]
+        if isinstance(total_values, int):
+            lines.append(f"Binned numeric values: {total_values}")
+        return "\n".join(lines)
+
     def build_network_model(
         self,
         triples: Iterable[Tuple[str, str, str]],
