@@ -63,8 +63,10 @@ class GraphDataService:
         self._hgnc_symbol_cache: Dict[str, Optional[str]] = {}
         self._hgnc_to_symbol: Dict[str, str] = {}
         self._hgnc_mapping_loaded = False
+        self._uuid_context_display_cache: Dict[Tuple[str, str, str], str] = {}
         self._filename_uuid_map: Dict[str, str] = {}
-        self._row_uri_labels_cache: Dict[str, Dict[str, str]] = {}
+        self._row_uri_labels_cache: Dict[str, Dict[str, Any]] = {}
+        self._row_sidecar_context_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self._uuid_maps_loaded = False
         self._uuid_map_source_path = ""
 
@@ -182,6 +184,60 @@ class GraphDataService:
         if edam_label:
             return edam_label
         return text
+
+    def display_value_with_uuid_context(
+        self,
+        value: str,
+        input_dir: str = "",
+        graph_path: str = "",
+        resolve_row_context: bool = True,
+    ) -> str:
+        """Return a compact display string, resolving UUIDs to human-readable aliases where possible."""
+        text = str(value).strip()
+        if not text:
+            return text
+
+        normalized_input_dir = os.path.normpath(input_dir) if input_dir else ""
+        normalized_graph_path = os.path.normpath(graph_path) if graph_path else ""
+        cache_key = (f"{text}|rows={int(resolve_row_context)}", normalized_input_dir, normalized_graph_path)
+        cached = self._uuid_context_display_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        if "urn:uuid:" not in text.lower():
+            resolved = self.display_value(text)
+            self._uuid_context_display_cache[cache_key] = resolved
+            return resolved
+
+        uuid_match = self._extract_uuid(text)
+        if uuid_match:
+            if input_dir or graph_path:
+                self.load_uuid_maps(input_dir=input_dir, graph_path=graph_path)
+
+            filename = self.resolve_uuid_to_filename(uuid_match)
+            if filename:
+                self._uuid_context_display_cache[cache_key] = filename
+                return filename
+
+            if resolve_row_context:
+                row_context = self.resolve_uuid_to_row_context(text, graph_path, input_dir=input_dir)
+                if row_context:
+                    display_filename = str(row_context.get("display_filename") or row_context.get("filename") or "").strip()
+                    row_label = str(row_context.get("row_label") or "").strip()
+                    if display_filename and row_label:
+                        resolved = f"{display_filename} {row_label}"
+                        self._uuid_context_display_cache[cache_key] = resolved
+                        return resolved
+                    if display_filename:
+                        self._uuid_context_display_cache[cache_key] = display_filename
+                        return display_filename
+                    if row_label:
+                        self._uuid_context_display_cache[cache_key] = row_label
+                        return row_label
+
+        resolved = self.display_value(text)
+        self._uuid_context_display_cache[cache_key] = resolved
+        return resolved
 
     @staticmethod
     def supports_sparql(graph: Any) -> bool:
@@ -497,6 +553,77 @@ class GraphDataService:
             "row_index": row_index,
         }
 
+    def _load_row_sidecar(self, sidecar_path: str) -> Dict[str, Dict[str, Any]]:
+        """Load and cache row-context entries for a sidecar JSON file."""
+        normalized_path = os.path.normpath(os.path.abspath(sidecar_path))
+        cached = self._row_sidecar_context_cache.get(normalized_path)
+        if cached is not None:
+            return cached
+
+        contexts: Dict[str, Dict[str, Any]] = {}
+        if not os.path.exists(normalized_path):
+            self._row_sidecar_context_cache[normalized_path] = contexts
+            self._row_uri_labels_cache[normalized_path] = {}
+            return contexts
+
+        try:
+            with open(normalized_path, "r", encoding="utf-8") as f:
+                row_labels = json.load(f)
+        except (OSError, ValueError, json.JSONDecodeError):
+            self._row_sidecar_context_cache[normalized_path] = contexts
+            self._row_uri_labels_cache[normalized_path] = {}
+            return contexts
+
+        if not isinstance(row_labels, dict):
+            self._row_sidecar_context_cache[normalized_path] = contexts
+            self._row_uri_labels_cache[normalized_path] = {}
+            return contexts
+
+        self._row_uri_labels_cache[normalized_path] = row_labels
+        candidate_name = os.path.basename(normalized_path)
+        for urn_key, label in row_labels.items():
+            extracted_uuid = self._extract_uuid(urn_key)
+            if not extracted_uuid:
+                continue
+            contexts[extracted_uuid] = self._row_context_from_sidecar_entry(candidate_name, label)
+
+        self._row_sidecar_context_cache[normalized_path] = contexts
+        return contexts
+
+    def prepopulate_row_context_cache(self, graph_path: str, input_dir: str = "") -> int:
+        """Load candidate row sidecars into memory and return number of sidecar files visited."""
+        seen_paths: set[str] = set()
+        loaded_count = 0
+
+        for sidecar_path in self._candidate_graph_sidecar_paths(graph_path):
+            normalized = os.path.normpath(os.path.abspath(sidecar_path))
+            if normalized in seen_paths:
+                continue
+            seen_paths.add(normalized)
+            self._load_row_sidecar(sidecar_path)
+            loaded_count += 1
+
+        for candidate_dir in self._candidate_row_label_dirs(graph_path, input_dir=input_dir):
+            try:
+                candidates = [
+                    f
+                    for f in os.listdir(candidate_dir)
+                    if f.endswith("_row_uri_labels.json") or f.endswith(".row_uri_labels.json")
+                ]
+            except (OSError, FileNotFoundError):
+                continue
+
+            for candidate in candidates:
+                full_path = os.path.join(candidate_dir, candidate)
+                normalized = os.path.normpath(os.path.abspath(full_path))
+                if normalized in seen_paths:
+                    continue
+                seen_paths.add(normalized)
+                self._load_row_sidecar(full_path)
+                loaded_count += 1
+
+        return loaded_count
+
     def resolve_uuid_to_row_context(self, uuid_str: str, graph_path: str, input_dir: str = "") -> Optional[Dict[str, Any]]:
         """
         Attempt to find row context (filename, row index) for a row UUID.
@@ -506,19 +633,10 @@ class GraphDataService:
         uuid_clean = self._extract_uuid(uuid_str) or str(uuid_str).lower()
 
         for sidecar_path in self._candidate_graph_sidecar_paths(graph_path):
-            if not os.path.exists(sidecar_path):
-                continue
-            candidate_name = os.path.basename(sidecar_path)
-            try:
-                with open(sidecar_path, "r", encoding="utf-8") as f:
-                    row_labels = json.load(f)
-                if isinstance(row_labels, dict):
-                    for urn_key, label in row_labels.items():
-                        extracted_uuid = self._extract_uuid(urn_key)
-                        if extracted_uuid == uuid_clean:
-                            return self._row_context_from_sidecar_entry(candidate_name, label)
-            except (OSError, ValueError, json.JSONDecodeError):
-                continue
+            contexts = self._load_row_sidecar(sidecar_path)
+            context = contexts.get(uuid_clean)
+            if context:
+                return context
 
         candidate_dirs = self._candidate_row_label_dirs(graph_path, input_dir=input_dir)
         if not candidate_dirs:
@@ -536,17 +654,10 @@ class GraphDataService:
 
             for candidate in candidates:
                 full_path = os.path.join(candidate_dir, candidate)
-                try:
-                    with open(full_path, "r", encoding="utf-8") as f:
-                        row_labels = json.load(f)
-                    if isinstance(row_labels, dict):
-                        # row_labels keys are URNs like "urn:uuid:...", values are like "row 42"
-                        for urn_key, label in row_labels.items():
-                            extracted_uuid = self._extract_uuid(urn_key)
-                            if extracted_uuid == uuid_clean:
-                                return self._row_context_from_sidecar_entry(candidate, label)
-                except (OSError, ValueError, json.JSONDecodeError):
-                    continue
+                contexts = self._load_row_sidecar(full_path)
+                context = contexts.get(uuid_clean)
+                if context:
+                    return context
 
         return None
 

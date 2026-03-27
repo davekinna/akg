@@ -12,7 +12,7 @@ import re
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 
-from PyQt5.QtCore import QPoint, QPointF, Qt, pyqtSignal
+from PyQt5.QtCore import QPoint, QPointF, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QBrush, QColor, QKeySequence, QPainter, QPen
 from PyQt5.QtWidgets import (
     QApplication,
@@ -48,7 +48,7 @@ from PyQt5.QtWidgets import (
 from kg_services import GraphDataService, MetadataService, NetworkNode, QueryResultTable, QueryService
 
 SETTINGS_FILE = "kg_explorer_settings.json"
-DEFAULT_VISIBLE_TRIPLES = 5000
+DEFAULT_VISIBLE_TRIPLES = 1000
 DEFAULT_NETWORK_MAX_EDGES = 250
 NETWORK_NODE_RADIUS = 18.0
 ITEM_USER_ROLE = 32
@@ -82,6 +82,46 @@ class QueryWorker(threading.Thread):
             self.callback(table.headers, table.rows, "")
         except Exception as exc:
             self.callback([], [], str(exc))
+
+
+class GraphLoadWorker(threading.Thread):
+    """Background thread for loading a graph and related startup artifacts."""
+
+    def __init__(
+        self,
+        graph_path: str,
+        input_dir: str,
+        graph_service: GraphDataService,
+        progress_callback: Any,
+        callback: Any,
+    ):
+        super().__init__(daemon=True)
+        self.graph_path = graph_path
+        self.input_dir = input_dir
+        self.graph_service = graph_service
+        self.progress_callback = progress_callback
+        self.callback = callback
+
+    def run(self) -> None:
+        try:
+            self.progress_callback(f"Loading graph: {self.graph_path}")
+            graph = self.graph_service.load_nt_graph(self.graph_path)
+
+            self.progress_callback("Extracting triples...")
+            all_triples = self.graph_service.triples_to_rows(graph)
+
+            self.progress_callback("Loading binning metadata...")
+            binning_metadata = self.graph_service.load_binning_metadata(self.graph_path)
+
+            self.progress_callback("Preloading row-label sidecars...")
+            sidecar_count = self.graph_service.prepopulate_row_context_cache(
+                graph_path=self.graph_path,
+                input_dir=self.input_dir,
+            )
+
+            self.callback(self.graph_path, graph, all_triples, binning_metadata, sidecar_count, "")
+        except Exception as exc:
+            self.callback(self.graph_path, None, [], {}, 0, str(exc))
 
 
 class NetworkGraphicsView(QGraphicsView):
@@ -162,6 +202,8 @@ class NetworkNodeItem(QGraphicsEllipseItem):
 
 class KGExplorerWindow(QMainWindow):
     query_result_signal = pyqtSignal(object, object, str)
+    graph_load_progress_signal = pyqtSignal(str)
+    graph_load_result_signal = pyqtSignal(str, object, object, object, int, str)
 
     def __init__(
         self,
@@ -192,19 +234,40 @@ class KGExplorerWindow(QMainWindow):
         self.current_query_result = QueryResultTable(headers=[], rows=[])
         self.binning_metadata: Dict[str, Any] = {}
         self._network_node_lookup: Dict[str, NetworkNode] = {}
+        self._active_graph_worker: Optional[GraphLoadWorker] = None
+        self._graph_loading_path = ""
+        self._startup_graph_path = ""
+        self._filter_timer = QTimer(self)
+        self._filter_timer.setSingleShot(True)
+        self._filter_timer.setInterval(180)
+        self._filter_timer.timeout.connect(self.apply_filters)
 
         self.query_result_signal.connect(self.on_query_result)
+        self.graph_load_progress_signal.connect(self.on_graph_load_progress)
+        self.graph_load_result_signal.connect(self.on_graph_load_result)
         self._build_ui()
         self._populate_graph_list()
 
         self.settings_path = os.path.join(os.getcwd(), SETTINGS_FILE)
-        self._load_settings()
+        startup_graph_from_settings = self._load_settings()
 
         self._populate_query_list()
         self.metadata_status_label.setText(self.metadata_service.status_message)
+        self.statusBar().showMessage("Ready")
 
         if graph_path:
-            self.load_graph(graph_path)
+            self._startup_graph_path = graph_path
+        elif startup_graph_from_settings:
+            self._startup_graph_path = startup_graph_from_settings
+
+        if self._startup_graph_path:
+            QTimer.singleShot(0, self._load_startup_graph)
+
+    def _load_startup_graph(self) -> None:
+        startup_graph_path = self._startup_graph_path
+        self._startup_graph_path = ""
+        if startup_graph_path:
+            self.load_graph(startup_graph_path)
 
     def _build_ui(self) -> None:
         central = QWidget(self)
@@ -293,9 +356,9 @@ class KGExplorerWindow(QMainWindow):
         self.object_filter = QLineEdit()
         self.object_filter.setPlaceholderText("Contains text in object")
 
-        self.subject_filter.textChanged.connect(self.apply_filters)
-        self.predicate_filter.textChanged.connect(self.apply_filters)
-        self.object_filter.textChanged.connect(self.apply_filters)
+        self.subject_filter.textChanged.connect(self.request_apply_filters)
+        self.predicate_filter.textChanged.connect(self.request_apply_filters)
+        self.object_filter.textChanged.connect(self.request_apply_filters)
 
         clear_filters_btn = QPushButton("Clear")
         clear_filters_btn.clicked.connect(self.clear_filters)
@@ -463,16 +526,51 @@ class KGExplorerWindow(QMainWindow):
             if os.path.exists(candidate):
                 graph_path = candidate
 
-        try:
-            graph = self.graph_service.load_nt_graph(graph_path)
-        except Exception as exc:
-            QMessageBox.critical(self, "Load Error", str(exc))
+        if self._active_graph_worker is not None:
+            QMessageBox.information(self, "Graph Loading", f"Already loading graph: {self._graph_loading_path}")
+            return
+
+        self._graph_loading_path = graph_path
+        self._set_graph_loading_state(True)
+        self.graph_label.setText(f"Loading: {graph_path}")
+        self.statusBar().showMessage(f"Loading graph: {graph_path}")
+
+        worker = GraphLoadWorker(
+            graph_path=graph_path,
+            input_dir=self.input_dir,
+            graph_service=self.graph_service,
+            progress_callback=self.graph_load_progress_signal.emit,
+            callback=self.graph_load_result_signal.emit,
+        )
+        self._active_graph_worker = worker
+        worker.start()
+
+    def on_graph_load_progress(self, message: str) -> None:
+        self.statusBar().showMessage(message)
+        self.query_status_label.setText(message)
+
+    def on_graph_load_result(
+        self,
+        graph_path: str,
+        graph: Any,
+        all_triples: List[Tuple[str, str, str]],
+        binning_metadata: Dict[str, Any],
+        sidecar_count: int,
+        error: str,
+    ) -> None:
+        self._active_graph_worker = None
+        self._graph_loading_path = ""
+
+        if error:
+            self._set_graph_loading_state(False)
+            self.statusBar().showMessage(f"Graph load failed: {error}")
+            QMessageBox.critical(self, "Load Error", error)
             return
 
         self.graph = graph
         self.current_graph_path = graph_path
-        self.all_triples = self.graph_service.triples_to_rows(graph)
-        self._load_binning_metadata(graph_path)
+        self.binning_metadata = binning_metadata
+        self.all_triples = all_triples
         self.filtered_triples = list(self.all_triples)
 
         if os.path.isdir(self.graph_dir):
@@ -484,18 +582,72 @@ class KGExplorerWindow(QMainWindow):
                     self.graph_combo.setCurrentText(graph_name)
 
         self.graph_label.setText(f"Loaded: {graph_path} ({len(self.all_triples)} triples)")
+        self.statusBar().showMessage(
+            f"Loaded {os.path.basename(graph_path)}: {len(self.all_triples)} triples, sidecars checked: {sidecar_count}"
+        )
+        self.query_status_label.setText(f"Graph loaded: {os.path.basename(graph_path)}")
+        self._set_graph_loading_state(False)
         self.apply_filters()
+
+    def _set_graph_loading_state(self, is_loading: bool) -> None:
+        self.load_button.setEnabled(not is_loading)
+        self.load_selected_button.setEnabled((not is_loading) and bool(self.available_graph_files))
+        self.refresh_graphs_button.setEnabled(not is_loading)
+        self.graph_combo.setEnabled(not is_loading)
+        self.run_query_button.setEnabled((not is_loading) and self.graph is not None)
+        self.export_button.setEnabled(not is_loading)
 
     def _load_binning_metadata(self, graph_path: str) -> None:
         self.binning_metadata = self.graph_service.load_binning_metadata(graph_path)
 
+    def request_apply_filters(self) -> None:
+        self._filter_timer.start()
+
     def apply_filters(self) -> None:
-        self.filtered_triples = self.graph_service.filter_triples(
-            self.all_triples,
-            subject_filter=self.subject_filter.text(),
-            predicate_filter=self.predicate_filter.text(),
-            object_filter=self.object_filter.text(),
-        )
+        sf = self.subject_filter.text().strip().lower()
+        pf = self.predicate_filter.text().strip().lower()
+        of = self.object_filter.text().strip().lower()
+
+        if not sf and not pf and not of:
+            self.filtered_triples = list(self.all_triples)
+            self._render_triples_table(self.filtered_triples)
+            self.refresh_network_view()
+            return
+
+        display_cache: Dict[str, str] = {}
+
+        def display_for(value: str) -> str:
+            cached = display_cache.get(value)
+            if cached is not None:
+                return cached
+            resolved = self.graph_service.display_value_with_uuid_context(
+                value,
+                input_dir=self.input_dir,
+                graph_path=self.current_graph_path,
+                resolve_row_context=True,
+            )
+            display_cache[value] = resolved
+            return resolved
+
+        def matches(value: str, needle: str) -> bool:
+            if not needle:
+                return True
+            raw_lower = value.lower()
+            if needle in raw_lower:
+                return True
+            return needle in display_for(value).lower()
+
+        filtered: List[Tuple[str, str, str]] = []
+        for subj, pred, obj in self.all_triples:
+            if not matches(subj, sf):
+                continue
+            if not matches(pred, pf):
+                continue
+            if not matches(obj, of):
+                continue
+            filtered.append((subj, pred, obj))
+
+        self.filtered_triples = filtered
         self._render_triples_table(self.filtered_triples)
         self.refresh_network_view()
 
@@ -509,17 +661,44 @@ class KGExplorerWindow(QMainWindow):
         to_show = triples[:DEFAULT_VISIBLE_TRIPLES]
         self.triples_table.setRowCount(len(to_show))
         self.triples_table.setColumnCount(3)
+        display_cache: Dict[str, str] = {}
+
+        def uuid_display(value: str) -> str:
+            cached = display_cache.get(value)
+            if cached is not None:
+                return cached
+            resolved = self.graph_service.display_value_with_uuid_context(
+                value,
+                input_dir=self.input_dir,
+                graph_path=self.current_graph_path,
+                resolve_row_context=True,
+            )
+            display_cache[value] = resolved
+            return resolved
 
         for row_idx, (subj, pred, obj) in enumerate(to_show):
-            self.triples_table.setItem(row_idx, 0, self._make_table_item(subj, raw_value=subj))
-            self.triples_table.setItem(row_idx, 1, self._make_table_item(pred, raw_value=pred))
-            self.triples_table.setItem(row_idx, 2, self._make_table_item(obj, raw_value=obj))
+            self.triples_table.setItem(
+                row_idx,
+                0,
+                self._make_table_item(subj, raw_value=subj, display_override=uuid_display(subj)),
+            )
+            self.triples_table.setItem(
+                row_idx,
+                1,
+                self._make_table_item(pred, raw_value=pred, display_override=uuid_display(pred)),
+            )
+            self.triples_table.setItem(
+                row_idx,
+                2,
+                self._make_table_item(obj, raw_value=obj, display_override=uuid_display(obj)),
+            )
 
         suffix = ""
         if len(triples) > DEFAULT_VISIBLE_TRIPLES:
             suffix = f" (showing first {DEFAULT_VISIBLE_TRIPLES})"
         self.triples_count_label.setText(f"Triples: {len(triples)}{suffix}")
-        self.triples_table.resizeColumnsToContents()
+        if len(to_show) <= 1000:
+            self.triples_table.resizeColumnsToContents()
 
     def on_run_query_clicked(self) -> None:
         if self.graph is None:
@@ -571,20 +750,30 @@ class KGExplorerWindow(QMainWindow):
 
         self.query_results_table.resizeColumnsToContents()
 
-    def _make_table_item(self, value: str, raw_value: str = "") -> QTableWidgetItem:
+    def _make_table_item(self, value: str, raw_value: str = "", display_override: str = "") -> QTableWidgetItem:
         raw = raw_value if raw_value else value
-        graph_service = self.__dict__.get("graph_service")
-        if graph_service is not None:
-            display = graph_service.display_value(raw)
+        if display_override:
+            display = display_override
         else:
-            display = raw
+            graph_service = self.__dict__.get("graph_service")
+            if graph_service is not None:
+                display = graph_service.display_value(raw)
+            else:
+                display = raw
 
         item = QTableWidgetItem(display)
         item.setData(ITEM_USER_ROLE, raw)
 
-        tooltip = self._format_bin_metadata([raw])
-        if tooltip:
-            item.setToolTip(tooltip)
+        tooltip_lines: List[str] = []
+        if display != raw:
+            tooltip_lines.append(f"Raw value: {raw}")
+
+        bin_tooltip = self._format_bin_metadata([raw])
+        if bin_tooltip:
+            tooltip_lines.append(bin_tooltip)
+
+        if tooltip_lines:
+            item.setToolTip("\n\n".join(tooltip_lines))
         return item
 
     def refresh_network_view(self) -> None:
@@ -802,13 +991,22 @@ class KGExplorerWindow(QMainWindow):
         )
 
     def _update_detail_and_metadata(self, values: List[str]) -> None:
-        # Enhance UUID references with human-readable names
-        enhanced_values = self.graph_service.enhance_uuid_values(
-            values,
-            input_dir=self.input_dir,
-            graph_path=self.current_graph_path,
-        )
-        self._set_linkified_text(self.detail_text, "\n".join(enhanced_values))
+        display_values = [
+            self.graph_service.display_value_with_uuid_context(
+                value,
+                input_dir=self.input_dir,
+                graph_path=self.current_graph_path,
+            )
+            for value in values
+        ]
+
+        detail_lines = list(display_values)
+        if any(display != raw for display, raw in zip(display_values, values)):
+            detail_lines.append("")
+            detail_lines.append("Raw values:")
+            detail_lines.extend(values)
+
+        self._set_linkified_text(self.detail_text, "\n".join(detail_lines))
 
         bin_info = self._format_bin_metadata(values)
         if bin_info:
@@ -863,17 +1061,17 @@ class KGExplorerWindow(QMainWindow):
         self._save_settings()
         super().closeEvent(event)
 
-    def _load_settings(self) -> None:
+    def _load_settings(self) -> str:
         if not os.path.exists(self.settings_path):
-            return
+            return ""
 
         try:
             with open(self.settings_path, "r", encoding="utf-8") as handle:
                 settings = json.load(handle)
             if not isinstance(settings, dict):
-                return
+                return ""
         except Exception:
-            return
+            return ""
 
         geometry_hex = settings.get("window_geometry")
         if isinstance(geometry_hex, str):
@@ -883,8 +1081,9 @@ class KGExplorerWindow(QMainWindow):
                 pass
 
         last_graph = settings.get("last_graph_path", "")
+        startup_graph = ""
         if isinstance(last_graph, str) and last_graph and os.path.exists(last_graph):
-            self.load_graph(last_graph)
+            startup_graph = last_graph
 
         last_query = settings.get("last_query_name", "")
         if isinstance(last_query, str) and last_query:
@@ -899,6 +1098,8 @@ class KGExplorerWindow(QMainWindow):
         last_pmid = settings.get("last_pmid", "")
         if isinstance(last_pmid, str):
             self.pmid_input.setText(last_pmid)
+
+        return startup_graph
 
     def _save_settings(self) -> None:
         settings: Dict[str, Any] = {}
