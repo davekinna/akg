@@ -10,7 +10,7 @@ import math
 import os
 import re
 import threading
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from PyQt5.QtCore import QPoint, QPointF, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QBrush, QColor, QKeySequence, QPainter, QPen
@@ -176,6 +176,14 @@ class NetworkEdgeItem(QGraphicsLineItem):
         self.setToolTip(f"Predicate: {predicate}")
         self.update_position()
 
+    def set_highlighted(self, highlighted: bool) -> None:
+        if highlighted:
+            self.setPen(QPen(QColor("#d9480f"), 2.6))
+            self.setZValue(1)
+        else:
+            self.setPen(QPen(QColor("#8fa0b3"), 1.4))
+            self.setZValue(0)
+
     def update_position(self) -> None:
         source_pos = self.source_item.scenePos()
         target_pos = self.target_item.scenePos()
@@ -234,9 +242,13 @@ class KGExplorerWindow(QMainWindow):
         self.current_query_result = QueryResultTable(headers=[], rows=[])
         self.binning_metadata: Dict[str, Any] = {}
         self._network_node_lookup: Dict[str, NetworkNode] = {}
+        self._network_node_items: Dict[str, NetworkNodeItem] = {}
+        self._network_edge_items: List[NetworkEdgeItem] = []
         self._active_graph_worker: Optional[GraphLoadWorker] = None
         self._graph_loading_path = ""
         self._startup_graph_path = ""
+        self._selection_sync_active = False
+        self._network_focus_identifiers: List[str] = []
         self._filter_timer = QTimer(self)
         self._filter_timer.setSingleShot(True)
         self._filter_timer.setInterval(180)
@@ -252,7 +264,7 @@ class KGExplorerWindow(QMainWindow):
         startup_graph_from_settings = self._load_settings()
 
         self._populate_query_list()
-        self.metadata_status_label.setText(self.metadata_service.status_message)
+        self.query_status_label.setText(self.metadata_service.status_message)
         self.statusBar().showMessage("Ready")
 
         if graph_path:
@@ -274,10 +286,18 @@ class KGExplorerWindow(QMainWindow):
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
 
+        splitter = QSplitter()
+        root.addWidget(splitter, 1)
+
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+
         top_bar = QHBoxLayout()
         top_bar.addWidget(QLabel("Graph:"))
         self.graph_combo = QComboBox()
         self.graph_combo.setEditable(False)
+        self.graph_combo.setMaximumWidth(560)
         top_bar.addWidget(self.graph_combo, 1)
 
         self.load_selected_button = QPushButton("Load Selected")
@@ -290,51 +310,17 @@ class KGExplorerWindow(QMainWindow):
 
         self.load_button = QPushButton("Load Graph (.nt)")
         self.load_button.clicked.connect(self.on_load_graph_clicked)
-        self.graph_label = QLabel("No graph loaded")
-        self.graph_label.setWordWrap(True)
         top_bar.addWidget(self.load_button)
-        top_bar.addWidget(self.graph_label, 2)
-        root.addLayout(top_bar)
+        top_bar.addStretch(1)
+        left_layout.addLayout(top_bar)
 
-        splitter = QSplitter()
-        root.addWidget(splitter, 1)
+        left_layout.addWidget(self._build_center_panel(), 1)
 
-        splitter.addWidget(self._build_left_panel())
-        splitter.addWidget(self._build_center_panel())
+        splitter.addWidget(left_panel)
         splitter.addWidget(self._build_right_panel())
-        splitter.setSizes([300, 900, 400])
-
-    def _build_left_panel(self) -> QWidget:
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-
-        query_group = QGroupBox("Preset SPARQL Queries")
-        query_layout = QVBoxLayout(query_group)
-
-        self.query_list = QListWidget()
-        query_layout.addWidget(self.query_list, 1)
-
-        pmid_row = QHBoxLayout()
-        pmid_row.addWidget(QLabel("PMID:"))
-        self.pmid_input = QLineEdit()
-        self.pmid_input.setPlaceholderText("Optional, for parameterized queries")
-        pmid_row.addWidget(self.pmid_input, 1)
-        query_layout.addLayout(pmid_row)
-
-        self.run_query_button = QPushButton("Run Selected Query")
-        self.run_query_button.clicked.connect(self.on_run_query_clicked)
-        query_layout.addWidget(self.run_query_button)
-
-        self.export_button = QPushButton("Export Query Results to CSV")
-        self.export_button.clicked.connect(self.on_export_csv_clicked)
-        query_layout.addWidget(self.export_button)
-
-        self.query_status_label = QLabel("Choose a query and click Run")
-        self.query_status_label.setWordWrap(True)
-        query_layout.addWidget(self.query_status_label)
-
-        layout.addWidget(query_group, 1)
-        return panel
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 3)
+        splitter.setSizes([820, 780])
 
     def _build_center_panel(self) -> QWidget:
         panel = QWidget()
@@ -386,16 +372,63 @@ class KGExplorerWindow(QMainWindow):
         self.tabs.addTab(triples_tab, "Triples")
 
         query_tab = QWidget()
-        query_layout = QVBoxLayout(query_tab)
+        query_outer = QHBoxLayout(query_tab)
+
+        query_group = QGroupBox("Preset SPARQL Queries")
+        query_group_layout = QVBoxLayout(query_group)
+
+        self.query_list = QListWidget()
+        query_group_layout.addWidget(self.query_list, 1)
+
+        pmid_row = QHBoxLayout()
+        pmid_row.addWidget(QLabel("PMID:"))
+        self.pmid_input = QLineEdit()
+        self.pmid_input.setPlaceholderText("Optional, for parameterized queries")
+        pmid_row.addWidget(self.pmid_input, 1)
+        query_group_layout.addLayout(pmid_row)
+
+        self.run_query_button = QPushButton("Run Selected Query")
+        self.run_query_button.clicked.connect(self.on_run_query_clicked)
+        query_group_layout.addWidget(self.run_query_button)
+
+        self.export_button = QPushButton("Export Query Results to CSV")
+        self.export_button.clicked.connect(self.on_export_csv_clicked)
+        query_group_layout.addWidget(self.export_button)
+
+        self.query_status_label = QLabel("Choose a query and click Run")
+        self.query_status_label.setWordWrap(True)
+        query_group_layout.addWidget(self.query_status_label)
+
+        query_outer.addWidget(query_group)
+
         self.query_results_table = QTableWidget(0, 0)
         self.query_results_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.query_results_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.query_results_table.itemSelectionChanged.connect(self.on_query_selection_changed)
-        query_layout.addWidget(self.query_results_table, 1)
-        self.tabs.addTab(query_tab, "Query Results")
+        query_outer.addWidget(self.query_results_table, 1)
 
-        network_tab = QWidget()
-        network_layout = QVBoxLayout(network_tab)
+        self.tabs.addTab(query_tab, "Queries")
+
+        return panel
+
+    def _build_right_panel(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        right_splitter = QSplitter(Qt.Vertical)
+
+        detail_panel = QWidget()
+        row_layout = QVBoxLayout(detail_panel)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        self.detail_text = QTextBrowser()
+        self.detail_text.setReadOnly(True)
+        self.detail_text.setOpenExternalLinks(True)
+        row_layout.addWidget(self.detail_text)
+
+        network_panel = QWidget()
+        network_layout = QVBoxLayout(network_panel)
+        network_layout.setContentsMargins(0, 0, 0, 0)
 
         network_controls = QHBoxLayout()
         network_controls.addWidget(QLabel("Max edges:"))
@@ -431,33 +464,13 @@ class KGExplorerWindow(QMainWindow):
         self.network_zoom_reset_shortcut = QShortcut(QKeySequence("Ctrl+0"), self.network_view)
         self.network_zoom_reset_shortcut.activated.connect(self.reset_network_zoom)
 
-        self.tabs.addTab(network_tab, "Network")
+        right_splitter.addWidget(detail_panel)
+        right_splitter.addWidget(network_panel)
+        right_splitter.setStretchFactor(0, 1)
+        right_splitter.setStretchFactor(1, 4)
+        right_splitter.setSizes([220, 640])
 
-        return panel
-
-    def _build_right_panel(self) -> QWidget:
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-
-        row_group = QGroupBox("Selected Row Details")
-        row_layout = QVBoxLayout(row_group)
-        self.detail_text = QTextBrowser()
-        self.detail_text.setReadOnly(True)
-        self.detail_text.setOpenExternalLinks(True)
-        row_layout.addWidget(self.detail_text)
-
-        metadata_group = QGroupBox("PMID Metadata")
-        metadata_layout = QVBoxLayout(metadata_group)
-        self.metadata_status_label = QLabel("")
-        self.metadata_status_label.setWordWrap(True)
-        self.metadata_text = QTextBrowser()
-        self.metadata_text.setReadOnly(True)
-        self.metadata_text.setOpenExternalLinks(True)
-        metadata_layout.addWidget(self.metadata_status_label)
-        metadata_layout.addWidget(self.metadata_text, 1)
-
-        layout.addWidget(row_group, 1)
-        layout.addWidget(metadata_group, 1)
+        layout.addWidget(right_splitter, 1)
         return panel
 
     def _populate_query_list(self) -> None:
@@ -532,7 +545,6 @@ class KGExplorerWindow(QMainWindow):
 
         self._graph_loading_path = graph_path
         self._set_graph_loading_state(True)
-        self.graph_label.setText(f"Loading: {graph_path}")
         self.statusBar().showMessage(f"Loading graph: {graph_path}")
 
         worker = GraphLoadWorker(
@@ -581,7 +593,6 @@ class KGExplorerWindow(QMainWindow):
                 if graph_name in self.available_graph_files:
                     self.graph_combo.setCurrentText(graph_name)
 
-        self.graph_label.setText(f"Loaded: {graph_path} ({len(self.all_triples)} triples)")
         self.statusBar().showMessage(
             f"Loaded {os.path.basename(graph_path)}: {len(self.all_triples)} triples, sidecars checked: {sidecar_count}"
         )
@@ -610,7 +621,7 @@ class KGExplorerWindow(QMainWindow):
 
         if not sf and not pf and not of:
             self.filtered_triples = list(self.all_triples)
-            self._render_triples_table(self.filtered_triples)
+            self._render_current_triples_table()
             self.refresh_network_view()
             return
 
@@ -648,57 +659,84 @@ class KGExplorerWindow(QMainWindow):
             filtered.append((subj, pred, obj))
 
         self.filtered_triples = filtered
-        self._render_triples_table(self.filtered_triples)
+        self._render_current_triples_table()
         self.refresh_network_view()
 
     def clear_filters(self) -> None:
-        self.subject_filter.clear()
-        self.predicate_filter.clear()
-        self.object_filter.clear()
+        self._filter_timer.stop()
+        self.subject_filter.blockSignals(True)
+        self.predicate_filter.blockSignals(True)
+        self.object_filter.blockSignals(True)
+        try:
+            self.subject_filter.clear()
+            self.predicate_filter.clear()
+            self.object_filter.clear()
+        finally:
+            self.object_filter.blockSignals(False)
+            self.predicate_filter.blockSignals(False)
+            self.subject_filter.blockSignals(False)
         self.apply_filters()
+
+    def _focused_triples(self) -> List[Tuple[str, str, str]]:
+        if not self._network_focus_identifiers:
+            return self.filtered_triples
+
+        target_identifiers = set(self._network_focus_identifiers)
+        return [
+            (subj, pred, obj)
+            for subj, pred, obj in self.filtered_triples
+            if subj in target_identifiers or obj in target_identifiers
+        ]
+
+    def _render_current_triples_table(self) -> None:
+        self._render_triples_table(self._focused_triples())
 
     def _render_triples_table(self, triples: List[Tuple[str, str, str]]) -> None:
         to_show = triples[:DEFAULT_VISIBLE_TRIPLES]
-        self.triples_table.setRowCount(len(to_show))
-        self.triples_table.setColumnCount(3)
-        display_cache: Dict[str, str] = {}
+        self.triples_table.blockSignals(True)
+        try:
+            self.triples_table.setRowCount(len(to_show))
+            self.triples_table.setColumnCount(3)
+            display_cache: Dict[str, str] = {}
 
-        def uuid_display(value: str) -> str:
-            cached = display_cache.get(value)
-            if cached is not None:
-                return cached
-            resolved = self.graph_service.display_value_with_uuid_context(
-                value,
-                input_dir=self.input_dir,
-                graph_path=self.current_graph_path,
-                resolve_row_context=True,
-            )
-            display_cache[value] = resolved
-            return resolved
+            def uuid_display(value: str) -> str:
+                cached = display_cache.get(value)
+                if cached is not None:
+                    return cached
+                resolved = self.graph_service.display_value_with_uuid_context(
+                    value,
+                    input_dir=self.input_dir,
+                    graph_path=self.current_graph_path,
+                    resolve_row_context=True,
+                )
+                display_cache[value] = resolved
+                return resolved
 
-        for row_idx, (subj, pred, obj) in enumerate(to_show):
-            self.triples_table.setItem(
-                row_idx,
-                0,
-                self._make_table_item(subj, raw_value=subj, display_override=uuid_display(subj)),
-            )
-            self.triples_table.setItem(
-                row_idx,
-                1,
-                self._make_table_item(pred, raw_value=pred, display_override=uuid_display(pred)),
-            )
-            self.triples_table.setItem(
-                row_idx,
-                2,
-                self._make_table_item(obj, raw_value=obj, display_override=uuid_display(obj)),
-            )
+            for row_idx, (subj, pred, obj) in enumerate(to_show):
+                self.triples_table.setItem(
+                    row_idx,
+                    0,
+                    self._make_table_item(subj, raw_value=subj, display_override=uuid_display(subj)),
+                )
+                self.triples_table.setItem(
+                    row_idx,
+                    1,
+                    self._make_table_item(pred, raw_value=pred, display_override=uuid_display(pred)),
+                )
+                self.triples_table.setItem(
+                    row_idx,
+                    2,
+                    self._make_table_item(obj, raw_value=obj, display_override=uuid_display(obj)),
+                )
 
-        suffix = ""
-        if len(triples) > DEFAULT_VISIBLE_TRIPLES:
-            suffix = f" (showing first {DEFAULT_VISIBLE_TRIPLES})"
-        self.triples_count_label.setText(f"Triples: {len(triples)}{suffix}")
-        if len(to_show) <= 1000:
-            self.triples_table.resizeColumnsToContents()
+            suffix = ""
+            if len(triples) > DEFAULT_VISIBLE_TRIPLES:
+                suffix = f" (showing first {DEFAULT_VISIBLE_TRIPLES})"
+            self.triples_count_label.setText(f"Triples: {len(triples)}{suffix}")
+            if len(to_show) <= 1000:
+                self.triples_table.resizeColumnsToContents()
+        finally:
+            self.triples_table.blockSignals(False)
 
     def on_run_query_clicked(self) -> None:
         if self.graph is None:
@@ -766,56 +804,188 @@ class KGExplorerWindow(QMainWindow):
         return item
 
     def refresh_network_view(self) -> None:
-        self.network_scene.clear()
-        self._network_node_lookup = {}
+        selected_identifiers = self._selected_network_identifiers()
+        fallback_identifiers = self._current_triple_node_identifiers()
 
-        if not self.filtered_triples:
-            self.network_summary_label.setText("Nodes: 0 | Edges: 0")
-            return
+        self.network_scene.blockSignals(True)
+        try:
+            self.network_scene.clear()
+            self._network_node_lookup = {}
+            self._network_node_items = {}
+            self._network_edge_items = []
 
-        model = self.graph_service.build_network_model(
-            self.filtered_triples,
-            max_edges=int(self.network_edge_limit.value()),
-            label_resolver=self.graph_service.display_value,
-        )
-        self._network_node_lookup = {node.identifier: node for node in model.nodes}
-        positions = self._compute_network_positions(model.nodes)
+            if not self.filtered_triples:
+                self.network_summary_label.setText("Nodes: 0 | Edges: 0")
+                return
 
-        node_items: Dict[str, NetworkNodeItem] = {}
+            model = self.graph_service.build_network_model(
+                self.filtered_triples,
+                max_edges=int(self.network_edge_limit.value()),
+                label_resolver=self.graph_service.display_value,
+            )
+            self._network_node_lookup = {node.identifier: node for node in model.nodes}
+            positions = self._compute_network_positions(model.nodes)
 
-        for node in model.nodes:
-            pos = positions.get(node.identifier)
-            if pos is None:
-                continue
+            node_items: Dict[str, NetworkNodeItem] = {}
 
-            node_item = NetworkNodeItem(NETWORK_NODE_RADIUS)
-            node_item.setBrush(QBrush(self._network_node_color(node)))
-            node_item.setPen(QPen(QColor("#314355"), 1.2))
-            node_item.setData(0, node.identifier)
-            node_item.setToolTip(self._network_node_tooltip(node))
-            node_item.setZValue(2)
-            node_item.setPos(pos)
-            self.network_scene.addItem(node_item)
+            for node in model.nodes:
+                pos = positions.get(node.identifier)
+                if pos is None:
+                    continue
 
-            label_item = QGraphicsSimpleTextItem(node.label)
-            label_item.setBrush(QBrush(QColor("#1f2933")))
-            label_item.setPos(pos.x() - 30, pos.y() + NETWORK_NODE_RADIUS + 2)
-            label_item.setZValue(3)
-            self.network_scene.addItem(label_item)
-            node_item.label_item = label_item
-            node_items[node.identifier] = node_item
+                node_item = NetworkNodeItem(NETWORK_NODE_RADIUS)
+                node_item.setBrush(QBrush(self._network_node_color(node)))
+                node_item.setPen(QPen(QColor("#314355"), 1.2))
+                node_item.setData(0, node.identifier)
+                node_item.setToolTip(self._network_node_tooltip(node))
+                node_item.setZValue(2)
+                node_item.setPos(pos)
+                self.network_scene.addItem(node_item)
 
-        for edge in model.edges:
-            source_item = node_items.get(edge.source)
-            target_item = node_items.get(edge.target)
-            if source_item is None or target_item is None:
-                continue
+                label_item = QGraphicsSimpleTextItem(node.label)
+                label_item.setBrush(QBrush(QColor("#1f2933")))
+                label_item.setPos(pos.x() - 30, pos.y() + NETWORK_NODE_RADIUS + 2)
+                label_item.setZValue(3)
+                self.network_scene.addItem(label_item)
+                node_item.label_item = label_item
+                node_items[node.identifier] = node_item
 
-            edge_item = NetworkEdgeItem(source_item, target_item, edge.predicate)
-            self.network_scene.addItem(edge_item)
+            for edge in model.edges:
+                source_item = node_items.get(edge.source)
+                target_item = node_items.get(edge.target)
+                if source_item is None or target_item is None:
+                    continue
 
-        self.network_summary_label.setText(f"Nodes: {len(model.nodes)} | Edges: {len(model.edges)}")
+                edge_item = NetworkEdgeItem(source_item, target_item, edge.predicate)
+                self.network_scene.addItem(edge_item)
+                self._network_edge_items.append(edge_item)
+
+            self._network_node_items = node_items
+            self.network_summary_label.setText(f"Nodes: {len(model.nodes)} | Edges: {len(model.edges)}")
+        finally:
+            self.network_scene.blockSignals(False)
+
+        restored_identifiers = selected_identifiers or fallback_identifiers
+        if restored_identifiers:
+            self._select_network_nodes(restored_identifiers)
+        else:
+            self._apply_network_node_highlight(set())
+            self._apply_network_edge_highlight(set(), set())
+
         self.fit_network_view()
+
+    def _selected_network_identifiers(self) -> List[str]:
+        identifiers: List[str] = []
+        for item in self.network_scene.selectedItems():
+            identifier = item.data(0)
+            if isinstance(identifier, str) and identifier:
+                identifiers.append(identifier)
+        return identifiers
+
+    def _current_triple_node_identifiers(self) -> List[str]:
+        row = self.triples_table.currentRow()
+        if row < 0:
+            return []
+
+        identifiers: List[str] = []
+        for col in (0, 2):
+            value = self._table_value(self.triples_table, row, col)
+            if value:
+                identifiers.append(value)
+        return identifiers
+
+    def _apply_network_node_highlight(self, identifiers: set[str]) -> None:
+        for identifier, item in self._network_node_items.items():
+            node = self._network_node_lookup.get(identifier)
+            if node is None:
+                continue
+
+            brush_color = self._network_node_color(node)
+            label_color = QColor("#1f2933")
+            pen = QPen(QColor("#314355"), 1.2)
+            if identifier in identifiers:
+                brush_color = brush_color.lighter(120)
+                label_color = QColor("#7c2d12")
+                pen = QPen(QColor("#d9480f"), 2.6)
+
+            item.setBrush(QBrush(brush_color))
+            item.setPen(pen)
+            if item.label_item is not None:
+                item.label_item.setBrush(QBrush(label_color))
+
+    def _apply_network_edge_highlight(self, edge_keys: set[Tuple[str, str, str]], node_identifiers: set[str]) -> None:
+        for edge_item in self._network_edge_items:
+            edge_key = (
+                str(edge_item.source_item.data(0) or ""),
+                edge_item.predicate,
+                str(edge_item.target_item.data(0) or ""),
+            )
+            highlighted = edge_key in edge_keys
+            if not highlighted and node_identifiers:
+                highlighted = edge_key[0] in node_identifiers or edge_key[2] in node_identifiers
+            edge_item.set_highlighted(highlighted)
+
+    def _select_network_nodes(self, identifiers: Iterable[str]) -> None:
+        target_identifiers = {identifier for identifier in identifiers if identifier in self._network_node_items}
+
+        self.network_scene.blockSignals(True)
+        try:
+            for item in self._network_node_items.values():
+                item.setSelected(False)
+            for identifier in target_identifiers:
+                self._network_node_items[identifier].setSelected(True)
+        finally:
+            self.network_scene.blockSignals(False)
+
+        self._apply_network_node_highlight(target_identifiers)
+        self._apply_network_edge_highlight(set(), target_identifiers)
+
+    def _select_triple_rows_for_identifiers(self, identifiers: Iterable[str]) -> None:
+        target_identifiers = {identifier for identifier in identifiers if identifier}
+        matching_rows: List[int] = []
+
+        self.triples_table.blockSignals(True)
+        try:
+            self.triples_table.clearSelection()
+            for row in range(self.triples_table.rowCount()):
+                subj = self._table_value(self.triples_table, row, 0)
+                obj = self._table_value(self.triples_table, row, 2)
+                if subj not in target_identifiers and obj not in target_identifiers:
+                    continue
+                matching_rows.append(row)
+
+            if matching_rows:
+                self.triples_table.setCurrentCell(matching_rows[0], 0)
+                for row in matching_rows:
+                    for col in range(self.triples_table.columnCount()):
+                        item = self.triples_table.item(row, col)
+                        if item is not None:
+                            item.setSelected(True)
+                first_item = self.triples_table.item(matching_rows[0], 0)
+                if first_item is not None:
+                    self.triples_table.scrollToItem(first_item)
+        finally:
+            self.triples_table.blockSignals(False)
+
+    def _selected_triple_rows(self) -> List[int]:
+        selected_rows = {index.row() for index in self.triples_table.selectionModel().selectedRows()} if self.triples_table.selectionModel() else set()
+        if not selected_rows:
+            current_row = self.triples_table.currentRow()
+            if current_row >= 0:
+                selected_rows.add(current_row)
+        return sorted(selected_rows)
+
+    def _selected_triple_edge_keys(self) -> List[Tuple[str, str, str]]:
+        edge_keys: List[Tuple[str, str, str]] = []
+        for row in self._selected_triple_rows():
+            edge_keys.append(
+                (
+                    self._table_value(self.triples_table, row, 0),
+                    self._table_value(self.triples_table, row, 1),
+                    self._table_value(self.triples_table, row, 2),
+                )
+            )
+        return edge_keys
 
     def zoom_network(self, factor: float) -> None:
         self.network_view.scale(factor, factor)
@@ -874,12 +1044,30 @@ class KGExplorerWindow(QMainWindow):
     def on_network_selection_changed(self) -> None:
         selected_items = self.network_scene.selectedItems()
         if not selected_items:
+            self._network_focus_identifiers = []
+            if not self._selection_sync_active:
+                self._render_current_triples_table()
+            self._apply_network_node_highlight(set())
+            self._apply_network_edge_highlight(set(), set())
             return
 
-        node_identifier = selected_items[0].data(0)
-        if not isinstance(node_identifier, str):
+        node_identifiers = []
+        for item in selected_items:
+            identifier = item.data(0)
+            if isinstance(identifier, str) and identifier:
+                node_identifiers.append(identifier)
+
+        if not node_identifiers:
+            self._network_focus_identifiers = []
+            if not self._selection_sync_active:
+                self._render_current_triples_table()
+            self._apply_network_node_highlight(set())
+            self._apply_network_edge_highlight(set(), set())
             return
 
+        self._apply_network_node_highlight(set(node_identifiers))
+        self._apply_network_edge_highlight(set(), set(node_identifiers))
+        node_identifier = node_identifiers[0]
         node = self._network_node_lookup.get(node_identifier)
         if node is None:
             return
@@ -890,6 +1078,17 @@ class KGExplorerWindow(QMainWindow):
             f"Degree: {node.degree}",
         ]
         self._update_detail_and_metadata(values)
+        if self._selection_sync_active:
+            return
+
+        self._selection_sync_active = True
+        try:
+            self._network_focus_identifiers = node_identifiers
+            self._render_current_triples_table()
+            self.tabs.setCurrentIndex(0)
+            self._select_triple_rows_for_identifiers(node_identifiers)
+        finally:
+            self._selection_sync_active = False
 
     def on_export_csv_clicked(self) -> None:
         headers = self.current_query_result.headers
@@ -923,6 +1122,8 @@ class KGExplorerWindow(QMainWindow):
     def on_triples_selection_changed(self) -> None:
         row = self.triples_table.currentRow()
         if row < 0:
+            if not self._selection_sync_active:
+                self._select_network_nodes([])
             return
 
         values = [
@@ -931,6 +1132,24 @@ class KGExplorerWindow(QMainWindow):
             self._table_value(self.triples_table, row, 2),
         ]
         self._update_detail_and_metadata(values)
+        selected_edge_keys = self._selected_triple_edge_keys()
+        selected_node_identifiers = {
+            identifier
+            for subj, _, obj in selected_edge_keys
+            for identifier in (subj, obj)
+            if identifier
+        }
+        self._apply_network_edge_highlight(set(selected_edge_keys), selected_node_identifiers)
+        if self._selection_sync_active:
+            return
+
+        self._selection_sync_active = True
+        try:
+            self._network_focus_identifiers = []
+            self._select_network_nodes(selected_node_identifiers)
+            self._apply_network_edge_highlight(set(selected_edge_keys), selected_node_identifiers)
+        finally:
+            self._selection_sync_active = False
 
     def on_query_selection_changed(self) -> None:
         row = self.query_results_table.currentRow()
@@ -970,12 +1189,16 @@ class KGExplorerWindow(QMainWindow):
         return linked.replace("\n", "<br>")
 
     def _set_linkified_text(self, browser: QTextBrowser, text: str) -> None:
+        self._set_html_text(browser, self._linkify_text(text))
+
+    def _set_html_text(self, browser: QTextBrowser, html_body: str) -> None:
         browser.setHtml(
             "<html><head><style>"
             "body { font-family: Segoe UI, sans-serif; font-size: 11pt; }"
             "a { color: #1e5fbf; text-decoration: underline; }"
+            "b { font-weight: 600; }"
             "</style></head><body>"
-            f"{self._linkify_text(text)}"
+            f"{html_body}"
             "</body></html>"
         )
 
@@ -989,54 +1212,57 @@ class KGExplorerWindow(QMainWindow):
             for value in values
         ]
 
-        detail_lines = list(display_values)
-        if any(display != raw for display, raw in zip(display_values, values)):
-            detail_lines.append("")
-            detail_lines.append("Raw values:")
-            detail_lines.extend(values)
+        detail_html_parts: List[str] = ["<b>Selected values:</b>"]
+        detail_html_parts.extend(self._linkify_text(value) for value in display_values)
 
-        self._set_linkified_text(self.detail_text, "\n".join(detail_lines))
+        if any(display != raw for display, raw in zip(display_values, values)):
+            detail_html_parts.append("")
+            detail_html_parts.append("<b>Raw values:</b>")
+            detail_html_parts.extend(self._linkify_text(value) for value in values)
 
         bin_info = self._format_bin_metadata(values)
         if bin_info:
-            self._set_linkified_text(self.metadata_text, bin_info)
-            return
+            detail_html_parts.append("")
+            detail_html_parts.append("Bin information:")
+            detail_html_parts.append(self._linkify_text(bin_info))
 
         pmid = MetadataService.extract_pmid_from_values(values)
-        if not pmid:
-            self._set_linkified_text(self.metadata_text, "No PMID detected in selected row")
-            return
+        if pmid:
+            metadata = self.metadata_service.get_by_pmid(pmid)
+            if not metadata:
+                detail_html_parts.append("")
+                detail_html_parts.append("PMID metadata:")
+                detail_html_parts.append(self._linkify_text(f"PMID {pmid} not found in metadata"))
+            else:
+                ordered_keys = [
+                    "pmid",
+                    "title",
+                    "doi",
+                    "journal",
+                    "year",
+                    "abstract",
+                ]
+                used = set()
+                lines: List[str] = [f"PMID: {pmid}"]
+                for key in ordered_keys:
+                    for candidate in metadata.keys():
+                        if candidate.strip().lower() == key and candidate not in used:
+                            value = metadata.get(candidate, "")
+                            if value:
+                                lines.append(f"{candidate}: {value}")
+                            used.add(candidate)
+                            break
 
-        metadata = self.metadata_service.get_by_pmid(pmid)
-        if not metadata:
-            self._set_linkified_text(self.metadata_text, f"PMID {pmid} not found in metadata")
-            return
+                for key, value in metadata.items():
+                    if key in used or not value:
+                        continue
+                    lines.append(f"{key}: {value}")
 
-        ordered_keys = [
-            "pmid",
-            "title",
-            "doi",
-            "journal",
-            "year",
-            "abstract",
-        ]
-        used = set()
-        lines: List[str] = [f"PMID: {pmid}"]
-        for key in ordered_keys:
-            for candidate in metadata.keys():
-                if candidate.strip().lower() == key and candidate not in used:
-                    value = metadata.get(candidate, "")
-                    if value:
-                        lines.append(f"{candidate}: {value}")
-                    used.add(candidate)
-                    break
+                detail_html_parts.append("")
+                detail_html_parts.append("PMID metadata:")
+                detail_html_parts.extend(self._linkify_text(line) for line in lines)
 
-        for key, value in metadata.items():
-            if key in used or not value:
-                continue
-            lines.append(f"{key}: {value}")
-
-        self._set_linkified_text(self.metadata_text, "\n".join(lines))
+        self._set_html_text(self.detail_text, "<br>".join(detail_html_parts))
 
     def _format_bin_metadata(self, values: List[str]) -> str:
         if not self.binning_metadata:
