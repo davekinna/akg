@@ -731,6 +731,207 @@ def test_enhance_uuid_values_handles_unknown_uuids():
 
 
 # ---------------------------------------------------------------------------
+# GraphDataService — display_value_with_uuid_context
+# ---------------------------------------------------------------------------
+
+def test_display_value_with_uuid_context_resolves_filename_uuid(tmp_path: Path):
+    service = GraphDataService()
+
+    graph_dir = tmp_path / "graph"
+    graph_dir.mkdir()
+    map_file = graph_dir / "filename_uuid_map.json"
+    map_file.write_text(
+        json.dumps({"expdata_TableS6": "6fddc7d8-3251-4697-abd8-fca338308db7"}),
+        encoding="utf-8",
+    )
+
+    result = service.display_value_with_uuid_context(
+        "urn:uuid:6fddc7d8-3251-4697-abd8-fca338308db7",
+        input_dir=str(tmp_path),
+    )
+
+    assert result == "expdata_TableS6"
+
+
+def test_display_value_with_uuid_context_resolves_row_uuid(tmp_path: Path):
+    service = GraphDataService()
+
+    graph_dir = tmp_path / "graph"
+    graph_dir.mkdir()
+    graph_path = graph_dir / "combined.nt"
+    sidecar = graph_dir / "combined.nt.row_uri_labels.json"
+    sidecar.write_text(
+        json.dumps({"urn:uuid:aaaabbbb-cccc-dddd-eeee-ffff00001111": "row 7"}),
+        encoding="utf-8",
+    )
+
+    result = service.display_value_with_uuid_context(
+        "urn:uuid:aaaabbbb-cccc-dddd-eeee-ffff00001111",
+        graph_path=str(graph_path),
+        resolve_row_context=True,
+    )
+
+    assert result == "combined row 7"
+
+
+def test_display_value_with_uuid_context_skips_row_context_when_disabled(tmp_path: Path):
+    service = GraphDataService()
+
+    graph_dir = tmp_path / "graph"
+    graph_dir.mkdir()
+    graph_path = graph_dir / "combined.nt"
+    sidecar = graph_dir / "combined.nt.row_uri_labels.json"
+    sidecar.write_text(
+        json.dumps({"urn:uuid:aaaabbbb-cccc-dddd-eeee-ffff00001111": "row 7"}),
+        encoding="utf-8",
+    )
+
+    result = service.display_value_with_uuid_context(
+        "urn:uuid:aaaabbbb-cccc-dddd-eeee-ffff00001111",
+        graph_path=str(graph_path),
+        resolve_row_context=False,
+    )
+
+    # Should return raw since row context is disabled and filename map is absent
+    assert "urn:uuid:aaaabbbb-cccc-dddd-eeee-ffff00001111" in result
+
+
+def test_display_value_with_uuid_context_returns_non_uuid_via_display_value():
+    service = GraphDataService()
+    service._hgnc_mapping_loaded = True
+    service._hgnc_to_symbol = {"HGNC:99": "MYGENE"}
+
+    result = service.display_value_with_uuid_context(
+        "https://monarchinitiative.org/HGNC:99",
+    )
+
+    assert result == "MYGENE"
+
+
+def test_display_value_with_uuid_context_caches_result(tmp_path: Path):
+    service = GraphDataService()
+
+    graph_dir = tmp_path / "graph"
+    graph_dir.mkdir()
+    map_file = graph_dir / "filename_uuid_map.json"
+    map_file.write_text(
+        json.dumps({"expdata_TableS6": "6fddc7d8-3251-4697-abd8-fca338308db7"}),
+        encoding="utf-8",
+    )
+
+    first = service.display_value_with_uuid_context(
+        "urn:uuid:6fddc7d8-3251-4697-abd8-fca338308db7",
+        input_dir=str(tmp_path),
+    )
+    # Corrupt the in-memory map to confirm cache is used on second call
+    service._filename_uuid_map = {}
+
+    second = service.display_value_with_uuid_context(
+        "urn:uuid:6fddc7d8-3251-4697-abd8-fca338308db7",
+        input_dir=str(tmp_path),
+    )
+
+    assert first == "expdata_TableS6"
+    assert second == "expdata_TableS6"
+
+
+# ---------------------------------------------------------------------------
+# GraphDataService — _load_row_sidecar (caching behaviour)
+# ---------------------------------------------------------------------------
+
+def test_load_row_sidecar_builds_uuid_context_map(tmp_path: Path):
+    service = GraphDataService()
+
+    sidecar = tmp_path / "combined.nt.row_uri_labels.json"
+    sidecar.write_text(
+        json.dumps({"urn:uuid:12345678-1234-5678-9abc-1234567890ab": "row 3"}),
+        encoding="utf-8",
+    )
+
+    contexts = service._load_row_sidecar(str(sidecar))
+
+    assert "12345678-1234-5678-9abc-1234567890ab" in contexts
+    assert contexts["12345678-1234-5678-9abc-1234567890ab"]["row_label"] == "row 3"
+
+
+def test_load_row_sidecar_caches_on_second_call(tmp_path: Path):
+    service = GraphDataService()
+
+    sidecar = tmp_path / "combined.nt.row_uri_labels.json"
+    sidecar.write_text(
+        json.dumps({"urn:uuid:aabbccdd-0000-0000-0000-000000000001": "row 1"}),
+        encoding="utf-8",
+    )
+
+    first = service._load_row_sidecar(str(sidecar))
+    # Remove file to confirm second call uses cache
+    sidecar.unlink()
+    second = service._load_row_sidecar(str(sidecar))
+
+    assert first is second
+
+
+def test_load_row_sidecar_returns_empty_for_missing_file(tmp_path: Path):
+    service = GraphDataService()
+    result = service._load_row_sidecar(str(tmp_path / "nonexistent.json"))
+    assert result == {}
+
+
+def test_load_row_sidecar_returns_empty_for_corrupt_json(tmp_path: Path):
+    service = GraphDataService()
+    bad = tmp_path / "bad.json"
+    bad.write_text("{{NOT JSON}}", encoding="utf-8")
+    result = service._load_row_sidecar(str(bad))
+    assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# GraphDataService — prepopulate_row_context_cache
+# ---------------------------------------------------------------------------
+
+def test_prepopulate_row_context_cache_loads_sidecar_files(tmp_path: Path):
+    service = GraphDataService()
+
+    graph_dir = tmp_path / "graph"
+    graph_dir.mkdir()
+    graph_path = graph_dir / "combined_36323788.nt"
+
+    sidecar = graph_dir / "combined_36323788.nt.row_uri_labels.json"
+    sidecar.write_text(
+        json.dumps({"urn:uuid:aabbccdd-0000-0000-0000-000000000001": "row 5"}),
+        encoding="utf-8",
+    )
+
+    count = service.prepopulate_row_context_cache(
+        graph_path=str(graph_path),
+        input_dir=str(tmp_path),
+    )
+
+    assert count >= 1
+    # Subsequent resolve should use in-memory cache, not disk
+    sidecar.unlink()
+    result = service.resolve_uuid_to_row_context(
+        "urn:uuid:aabbccdd-0000-0000-0000-000000000001",
+        str(graph_path),
+    )
+    assert result is not None
+    assert result["row_label"] == "row 5"
+
+
+def test_prepopulate_returns_zero_when_no_sidecars(tmp_path: Path):
+    service = GraphDataService()
+    graph_path = tmp_path / "graph" / "combined.nt"
+    (tmp_path / "graph").mkdir()
+
+    count = service.prepopulate_row_context_cache(
+        graph_path=str(graph_path),
+        input_dir=str(tmp_path),
+    )
+
+    assert count == 0
+
+
+# ---------------------------------------------------------------------------
 # Integration Tests - GUI + Services
 # ---------------------------------------------------------------------------
 

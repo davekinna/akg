@@ -763,17 +763,6 @@ class KGExplorerWindow(QMainWindow):
 
         item = QTableWidgetItem(display)
         item.setData(ITEM_USER_ROLE, raw)
-
-        tooltip_lines: List[str] = []
-        if display != raw:
-            tooltip_lines.append(f"Raw value: {raw}")
-
-        bin_tooltip = self._format_bin_metadata([raw])
-        if bin_tooltip:
-            tooltip_lines.append(bin_tooltip)
-
-        if tooltip_lines:
-            item.setToolTip("\n\n".join(tooltip_lines))
         return item
 
     def refresh_network_view(self) -> None:
