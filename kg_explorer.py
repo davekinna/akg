@@ -5,17 +5,19 @@ from __future__ import annotations
 
 import argparse
 import html
+import itertools
 import json
 import math
 import os
 import re
 import threading
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from PyQt5.QtCore import QPoint, QPointF, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QBrush, QColor, QKeySequence, QPainter, QPen
 from PyQt5.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QGraphicsEllipseItem,
@@ -169,19 +171,28 @@ class NetworkEdgeItem(QGraphicsLineItem):
         self.source_item = source_item
         self.target_item = target_item
         self.predicate = predicate
+        self._base_color = QColor("#8fa0b3")
+        self._highlighted = False
         self.source_item.edge_items.append(self)
         self.target_item.edge_items.append(self)
-        self.setPen(QPen(QColor("#8fa0b3"), 1.4))
+        self.setPen(QPen(self._base_color, 1.4))
         self.setZValue(0)
         self.setToolTip(f"Predicate: {predicate}")
         self.update_position()
 
+    def set_base_color(self, color: QColor) -> None:
+        self._base_color = QColor(color)
+        if not self._highlighted:
+            self.setPen(QPen(self._base_color, 1.4))
+            self.setZValue(0)
+
     def set_highlighted(self, highlighted: bool) -> None:
+        self._highlighted = highlighted
         if highlighted:
             self.setPen(QPen(QColor("#d9480f"), 2.6))
             self.setZValue(1)
         else:
-            self.setPen(QPen(QColor("#8fa0b3"), 1.4))
+            self.setPen(QPen(self._base_color, 1.4))
             self.setZValue(0)
 
     def update_position(self) -> None:
@@ -244,6 +255,10 @@ class KGExplorerWindow(QMainWindow):
         self._network_node_lookup: Dict[str, NetworkNode] = {}
         self._network_node_items: Dict[str, NetworkNodeItem] = {}
         self._network_edge_items: List[NetworkEdgeItem] = []
+        self._network_group_node_colors: Dict[str, QColor] = {}
+        self._network_group_edge_colors: Dict[Tuple[str, str, str], QColor] = {}
+        self._network_table_colors: Dict[str, QColor] = {}
+        self._network_table_publications: Dict[str, str] = {}
         self._active_graph_worker: Optional[GraphLoadWorker] = None
         self._graph_loading_path = ""
         self._startup_graph_path = ""
@@ -446,7 +461,22 @@ class KGExplorerWindow(QMainWindow):
         fit_button.clicked.connect(self.fit_network_view)
         network_controls.addWidget(fit_button)
 
+        self.chk_show_detail = QCheckBox("Show detail nodes")
+        self.chk_show_detail.setChecked(False)
+        self.chk_show_detail.setToolTip(
+            "When unchecked, only publication and table-level nodes are shown.\n"
+            "Check to reveal row and data nodes."
+        )
+        self.chk_show_detail.toggled.connect(self.refresh_network_view)
+        network_controls.addWidget(self.chk_show_detail)
+
         network_layout.addLayout(network_controls)
+
+        self.network_legend_text = QTextBrowser()
+        self.network_legend_text.setReadOnly(True)
+        self.network_legend_text.setMaximumHeight(150)
+        self.network_legend_text.setPlaceholderText("Table color legend will appear after graph render")
+        network_layout.addWidget(self.network_legend_text)
 
         self.network_scene = QGraphicsScene(self)
         self.network_scene.selectionChanged.connect(self.on_network_selection_changed)
@@ -813,28 +843,82 @@ class KGExplorerWindow(QMainWindow):
             self._network_node_lookup = {}
             self._network_node_items = {}
             self._network_edge_items = []
+            self._network_group_node_colors = {}
+            self._network_group_edge_colors = {}
+            self._network_table_colors = {}
+            self._network_table_publications = {}
 
             if not self.filtered_triples:
                 self.network_summary_label.setText("Nodes: 0 | Edges: 0")
+                self._set_html_text(self.network_legend_text, "<b>Table legend:</b><br>None")
                 return
 
+            def network_label(value: str) -> str:
+                return self.graph_service.display_value_with_uuid_context(
+                    value,
+                    input_dir=self.input_dir,
+                    graph_path=self.current_graph_path,
+                    resolve_row_context=True,
+                )
+
+            # Prioritise structural triples (publication-level and has_output edges)
+            # so they are always included regardless of their position in the data,
+            # without sorting the entire (potentially very large) triple list.
+            # Tier 1: publication → has_output edges (few; define table roots)
+            # Tier 2: other has_output edges + any publication metadata triples
+            # Tier 3: everything else
+            # This ensures pub→table skeleton is always within the first max_edges
+            # regardless of where those triples happen to fall in the source file.
+            _tier1: List[Tuple[str, str, str]] = []
+            _tier2: List[Tuple[str, str, str]] = []
+            _tier3: List[Tuple[str, str, str]] = []
+            for _t in self.filtered_triples:
+                _is_pub = self._is_publication_node(_t[0])
+                _is_hop = self._is_has_output_predicate(_t[1])
+                if _is_pub and _is_hop:
+                    _tier1.append(_t)
+                elif _is_hop or _is_pub:
+                    _tier2.append(_t)
+                else:
+                    _tier3.append(_t)
+            _prioritised = itertools.chain(_tier1, _tier2, _tier3)
+
             model = self.graph_service.build_network_model(
-                self.filtered_triples,
+                _prioritised,
                 max_edges=int(self.network_edge_limit.value()),
-                label_resolver=self.graph_service.display_value,
+                label_resolver=network_label,
             )
+
+            (
+                self._network_group_node_colors,
+                self._network_group_edge_colors,
+                self._network_table_colors,
+                self._network_table_publications,
+            ) = self._compute_table_lineage_colors(model)
+
             self._network_node_lookup = {node.identifier: node for node in model.nodes}
             positions = self._compute_network_positions(model.nodes)
+
+            hide_detail = not self.chk_show_detail.isChecked()
+            structural_ids: Set[str] = set()
+            if hide_detail:
+                structural_ids = set(self._network_table_colors.keys())
+                for _n in model.nodes:
+                    if self._is_publication_node(_n.identifier):
+                        structural_ids.add(_n.identifier)
 
             node_items: Dict[str, NetworkNodeItem] = {}
 
             for node in model.nodes:
+                if hide_detail and node.identifier not in structural_ids:
+                    continue
                 pos = positions.get(node.identifier)
                 if pos is None:
                     continue
 
                 node_item = NetworkNodeItem(NETWORK_NODE_RADIUS)
-                node_item.setBrush(QBrush(self._network_node_color(node)))
+                base_color = self._network_group_node_colors.get(node.identifier, self._network_node_color(node))
+                node_item.setBrush(QBrush(base_color))
                 node_item.setPen(QPen(QColor("#314355"), 1.2))
                 node_item.setData(0, node.identifier)
                 node_item.setToolTip(self._network_node_tooltip(node))
@@ -857,11 +941,19 @@ class KGExplorerWindow(QMainWindow):
                     continue
 
                 edge_item = NetworkEdgeItem(source_item, target_item, edge.predicate)
+                edge_key = (edge.source, edge.predicate, edge.target)
+                edge_base_color = self._network_group_edge_colors.get(edge_key)
+                if edge_base_color is not None:
+                    edge_item.set_base_color(edge_base_color)
                 self.network_scene.addItem(edge_item)
                 self._network_edge_items.append(edge_item)
 
             self._network_node_items = node_items
-            self.network_summary_label.setText(f"Nodes: {len(model.nodes)} | Edges: {len(model.edges)}")
+            detail_note = " (detail hidden)" if hide_detail else ""
+            self.network_summary_label.setText(
+                f"Nodes: {len(node_items)} | Edges: {len(self._network_edge_items)}{detail_note}"
+            )
+            self._render_network_legend(network_label)
         finally:
             self.network_scene.blockSignals(False)
 
@@ -894,13 +986,130 @@ class KGExplorerWindow(QMainWindow):
                 identifiers.append(value)
         return identifiers
 
+    @staticmethod
+    def _is_has_output_predicate(predicate: str) -> bool:
+        p = predicate.strip().lower()
+        return "has_output" in p or p.endswith("/hasoutput") or p.endswith("#hasoutput")
+
+    @staticmethod
+    def _is_publication_node(value: str) -> bool:
+        if MetadataService.normalize_pmid(value):
+            return True
+        lower = value.strip().lower()
+        return "pubmed.ncbi.nlm.nih.gov" in lower or "/pmid/" in lower
+
+    def _compute_table_lineage_colors(
+        self,
+        model: Any,
+    ) -> Tuple[
+        Dict[str, QColor],
+        Dict[Tuple[str, str, str], QColor],
+        Dict[str, QColor],
+        Dict[str, str],
+    ]:
+        root_edges: List[Tuple[str, str, str]] = []
+        table_publications: Dict[str, str] = {}
+        for edge in model.edges:
+            if not self._is_has_output_predicate(edge.predicate):
+                continue
+            if self._is_publication_node(edge.source):
+                root_edges.append((edge.source, edge.predicate, edge.target))
+                table_publications.setdefault(edge.target, edge.source)
+
+        table_roots: List[str] = []
+        seen_roots: set[str] = set()
+        for _, _, target in root_edges:
+            if target in seen_roots:
+                continue
+            seen_roots.add(target)
+            table_roots.append(target)
+
+        outgoing: Dict[str, List[Tuple[str, str, str]]] = {}
+        for edge in model.edges:
+            outgoing.setdefault(edge.source, []).append((edge.source, edge.predicate, edge.target))
+
+        node_to_tables: Dict[str, set[str]] = {}
+        edge_to_tables: Dict[Tuple[str, str, str], set[str]] = {}
+
+        for source, predicate, target in root_edges:
+            edge_key = (source, predicate, target)
+            edge_to_tables.setdefault(edge_key, set()).add(target)
+
+        for table_root in table_roots:
+            frontier = [table_root]
+            seen_nodes = {table_root}
+            while frontier:
+                current = frontier.pop()
+                node_to_tables.setdefault(current, set()).add(table_root)
+                for edge_key in outgoing.get(current, []):
+                    edge_to_tables.setdefault(edge_key, set()).add(table_root)
+                    nxt = edge_key[2]
+                    if nxt in seen_nodes:
+                        continue
+                    seen_nodes.add(nxt)
+                    frontier.append(nxt)
+
+        table_roots_sorted = sorted(table_roots)
+        table_colors: Dict[str, QColor] = {
+            table_root: self._table_group_color(index)
+            for index, table_root in enumerate(table_roots_sorted)
+        }
+
+        neutral = QColor("#c7ccd4")
+        node_colors: Dict[str, QColor] = {}
+        for node_id, tables in node_to_tables.items():
+            if len(tables) == 1:
+                table_root = next(iter(tables))
+                node_colors[node_id] = table_colors[table_root]
+            else:
+                node_colors[node_id] = neutral
+
+        edge_colors: Dict[Tuple[str, str, str], QColor] = {}
+        for edge_key, tables in edge_to_tables.items():
+            if len(tables) == 1:
+                table_root = next(iter(tables))
+                edge_colors[edge_key] = table_colors[table_root]
+            else:
+                edge_colors[edge_key] = neutral
+
+        return node_colors, edge_colors, table_colors, table_publications
+
+    def _render_network_legend(self, label_resolver: Any) -> None:
+        if not self._network_table_colors:
+            self._set_html_text(self.network_legend_text, "<b>Table legend:</b><br>None")
+            return
+
+        parts: List[str] = ["<b>Table legend:</b>"]
+        legend_entries: List[Tuple[str, str, str, QColor]] = []
+        for table_id, color in self._network_table_colors.items():
+            publication_id = self._network_table_publications.get(table_id, "")
+            publication_label = str(label_resolver(publication_id)) if publication_id else ""
+            table_label = str(label_resolver(table_id))
+            legend_entries.append((publication_label.lower(), table_label.lower(), table_id, color))
+
+        current_pub_display = ""
+        for _, _, table_id, color in sorted(legend_entries):
+            publication_id = self._network_table_publications.get(table_id, "")
+            publication_label = html.escape(str(label_resolver(publication_id))) if publication_id else "(no publication root)"
+            table_label = html.escape(str(label_resolver(table_id)))
+            color_hex = color.name()
+            if publication_label != current_pub_display:
+                parts.append(f"<b>{publication_label}</b>")
+                current_pub_display = publication_label
+            parts.append(
+                f'<span style="display:inline-block;width:10px;height:10px;border:1px solid #555;background:{color_hex};"></span> '
+                f"{table_label}"
+            )
+
+        self._set_html_text(self.network_legend_text, "<br>".join(parts))
+
     def _apply_network_node_highlight(self, identifiers: set[str]) -> None:
         for identifier, item in self._network_node_items.items():
             node = self._network_node_lookup.get(identifier)
             if node is None:
                 continue
 
-            brush_color = self._network_node_color(node)
+            brush_color = self._network_group_node_colors.get(identifier, self._network_node_color(node))
             label_color = QColor("#1f2933")
             pen = QPen(QColor("#314355"), 1.2)
             if identifier in identifiers:
@@ -1025,6 +1234,13 @@ class KGExplorerWindow(QMainWindow):
         if node.is_literal:
             return QColor("#f7c59f")
         return QColor("#7bd389")
+
+    @staticmethod
+    def _table_group_color(index: int) -> QColor:
+        hue = int((index * 137) % 360)
+        saturation = 190
+        value = 220
+        return QColor.fromHsv(hue, saturation, value)
 
     def _network_node_tooltip(self, node: NetworkNode) -> str:
         lines = [
