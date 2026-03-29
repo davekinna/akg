@@ -785,6 +785,12 @@ class QueryService:
             raise ValueError("SPARQL queries are not available for .hdt graphs. Load the .nt graph to run queries.")
 
         query_text = self.load_query_text(query_name)
+        return self.run_query_text(graph, query_text, pmid=pmid)
+
+    def run_query_text(self, graph: Any, query_text: str, pmid: str = "") -> QueryResultTable:
+        if not GraphDataService.supports_sparql(graph):
+            raise ValueError("SPARQL queries are not available for .hdt graphs. Load the .nt graph to run queries.")
+
         query_text = self.render_query(query_text, pmid=pmid)
         raw_results: Any = graph.query(query_text)
 

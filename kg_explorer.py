@@ -13,11 +13,10 @@ import re
 import threading
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
-from PyQt5.QtCore import QPoint, QPointF, Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QPoint, QPointF, Qt, QTimer, QUrl, pyqtSignal
 from PyQt5.QtGui import QBrush, QColor, QKeySequence, QPainter, QPen
 from PyQt5.QtWidgets import (
     QApplication,
-    QCheckBox,
     QComboBox,
     QFileDialog,
     QGraphicsEllipseItem,
@@ -43,6 +42,8 @@ from PyQt5.QtWidgets import (
     QTableWidgetItem,
     QTextBrowser,
     QTextEdit,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -54,6 +55,8 @@ DEFAULT_VISIBLE_TRIPLES = 1000
 DEFAULT_NETWORK_MAX_EDGES = 250
 NETWORK_NODE_RADIUS = 18.0
 ITEM_USER_ROLE = 32
+OVERVIEW_KIND_ROLE = ITEM_USER_ROLE + 1
+OVERVIEW_ID_ROLE = ITEM_USER_ROLE + 2
 
 
 class QueryWorker(threading.Thread):
@@ -68,6 +71,7 @@ class QueryWorker(threading.Thread):
         graph: Any,
         query_name: str,
         pmid: str,
+        query_text_override: str,
         query_service: QueryService,
         callback: Any,
     ):
@@ -75,12 +79,16 @@ class QueryWorker(threading.Thread):
         self.graph = graph
         self.query_name = query_name
         self.pmid = pmid
+        self.query_text_override = query_text_override
         self.query_service = query_service
         self.callback = callback
 
     def run(self) -> None:
         try:
-            table = self.query_service.run_query(self.graph, self.query_name, pmid=self.pmid)
+            if self.query_text_override.strip():
+                table = self.query_service.run_query_text(self.graph, self.query_text_override, pmid=self.pmid)
+            else:
+                table = self.query_service.run_query(self.graph, self.query_name, pmid=self.pmid)
             self.callback(table.headers, table.rows, "")
         except Exception as exc:
             self.callback([], [], str(exc))
@@ -259,6 +267,16 @@ class KGExplorerWindow(QMainWindow):
         self._network_group_edge_colors: Dict[Tuple[str, str, str], QColor] = {}
         self._network_table_colors: Dict[str, QColor] = {}
         self._network_table_publications: Dict[str, str] = {}
+        self._network_table_lineages: Dict[str, Set[str]] = {}
+        self._network_table_children: Dict[str, Set[str]] = {}
+        self._network_legend_table_links: Dict[str, str] = {}
+        self._scope_publication_tables: Dict[str, List[str]] = {}
+        self._scope_table_publication: Dict[str, str] = {}
+        self._scope_table_lineages: Dict[str, Set[str]] = {}
+        self._scope_table_row_counts: Dict[str, int] = {}
+        self._overview_tree_updating = False
+        self._triples_page_index = 0
+        self._busy_cursor_depth = 0
         self._active_graph_worker: Optional[GraphLoadWorker] = None
         self._graph_loading_path = ""
         self._startup_graph_path = ""
@@ -344,7 +362,39 @@ class KGExplorerWindow(QMainWindow):
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
 
+        overview_tab = QWidget()
+        overview_layout = QVBoxLayout(overview_tab)
+
+        overview_help = QLabel(
+            "Select publications/tables to define working scope. "
+            "Triples and Network views will use only this scope (within their current numeric limits)."
+        )
+        overview_help.setWordWrap(True)
+        overview_layout.addWidget(overview_help)
+
+        overview_actions = QHBoxLayout()
+        self.overview_select_all_button = QPushButton("Select all")
+        self.overview_select_all_button.clicked.connect(lambda: self._set_all_overview_tables(Qt.Checked))
+        overview_actions.addWidget(self.overview_select_all_button)
+        self.overview_select_none_button = QPushButton("Select none")
+        self.overview_select_none_button.clicked.connect(lambda: self._set_all_overview_tables(Qt.Unchecked))
+        overview_actions.addWidget(self.overview_select_none_button)
+        overview_actions.addStretch(1)
+        overview_layout.addLayout(overview_actions)
+
+        self.overview_tree = QTreeWidget()
+        self.overview_tree.setHeaderLabels(["Publication / Table", "Rows"])
+        self.overview_tree.itemChanged.connect(self.on_overview_tree_item_changed)
+        overview_layout.addWidget(self.overview_tree, 1)
+
+        self.overview_summary_label = QLabel("No graph loaded")
+        self.overview_summary_label.setWordWrap(True)
+        overview_layout.addWidget(self.overview_summary_label)
+
+        self.tabs.addTab(overview_tab, "Overview")
+
         triples_tab = QWidget()
+        self.triples_tab = triples_tab
         triples_layout = QVBoxLayout(triples_tab)
 
         filter_box = QGroupBox("Triple Filters")
@@ -361,21 +411,81 @@ class KGExplorerWindow(QMainWindow):
         self.predicate_filter.textChanged.connect(self.request_apply_filters)
         self.object_filter.textChanged.connect(self.request_apply_filters)
 
-        clear_filters_btn = QPushButton("Clear")
+        clear_filters_btn = QPushButton("Clear all")
         clear_filters_btn.clicked.connect(self.clear_filters)
+
+        clear_subject_btn = QPushButton("Clear")
+        clear_subject_btn.clicked.connect(lambda: self.clear_single_filter("subject"))
+        clear_predicate_btn = QPushButton("Clear")
+        clear_predicate_btn.clicked.connect(lambda: self.clear_single_filter("predicate"))
+        clear_object_btn = QPushButton("Clear")
+        clear_object_btn.clicked.connect(lambda: self.clear_single_filter("object"))
 
         filter_layout.addWidget(QLabel("Subject"), 0, 0)
         filter_layout.addWidget(self.subject_filter, 0, 1)
+        filter_layout.addWidget(clear_subject_btn, 0, 2)
         filter_layout.addWidget(QLabel("Predicate"), 1, 0)
         filter_layout.addWidget(self.predicate_filter, 1, 1)
+        filter_layout.addWidget(clear_predicate_btn, 1, 2)
         filter_layout.addWidget(QLabel("Object"), 2, 0)
         filter_layout.addWidget(self.object_filter, 2, 1)
-        filter_layout.addWidget(clear_filters_btn, 0, 2, 3, 1)
+        filter_layout.addWidget(clear_object_btn, 2, 2)
+
+        quick_pred_row = QHBoxLayout()
+        gene_pred_button = QPushButton("Gene")
+        gene_pred_button.setToolTip("https://w3id.org/biolink/vocab/Gene")
+        gene_pred_button.clicked.connect(lambda: self.set_predicate_filter_preset("https://w3id.org/biolink/vocab/Gene"))
+        quick_pred_row.addWidget(gene_pred_button)
+
+        logfc_pred_button = QPushButton("LogFC")
+        logfc_pred_button.setToolTip("http://edamontology.org/data_3754")
+        logfc_pred_button.clicked.connect(lambda: self.set_predicate_filter_preset("http://edamontology.org/data_3754"))
+        quick_pred_row.addWidget(logfc_pred_button)
+
+        pvalue_pred_button = QPushButton("P-value")
+        pvalue_pred_button.setToolTip("http://edamontology.org/data_1669")
+        pvalue_pred_button.clicked.connect(lambda: self.set_predicate_filter_preset("http://edamontology.org/data_1669"))
+        quick_pred_row.addWidget(pvalue_pred_button)
+
+        clear_pred_button = QPushButton("Clear predicate")
+        clear_pred_button.clicked.connect(lambda: self.set_predicate_filter_preset(""))
+        quick_pred_row.addWidget(clear_pred_button)
+        quick_pred_row.addStretch(1)
+
+        filter_layout.addWidget(QLabel("Quick predicates"), 3, 0)
+        filter_layout.addLayout(quick_pred_row, 3, 1)
+        filter_layout.addWidget(clear_filters_btn, 3, 2)
 
         triples_layout.addWidget(filter_box)
 
+        triples_nav = QHBoxLayout()
         self.triples_count_label = QLabel("Triples: 0")
-        triples_layout.addWidget(self.triples_count_label)
+        triples_nav.addWidget(self.triples_count_label, 1)
+
+        self.triples_first_button = QPushButton("First")
+        self.triples_first_button.setEnabled(False)
+        self.triples_first_button.clicked.connect(self.on_triples_first_page)
+        triples_nav.addWidget(self.triples_first_button)
+
+        self.triples_prev_button = QPushButton("Prev")
+        self.triples_prev_button.setEnabled(False)
+        self.triples_prev_button.clicked.connect(self.on_triples_prev_page)
+        triples_nav.addWidget(self.triples_prev_button)
+
+        self.triples_page_label = QLabel("Page 1/1")
+        triples_nav.addWidget(self.triples_page_label)
+
+        self.triples_next_button = QPushButton("Next")
+        self.triples_next_button.setEnabled(False)
+        self.triples_next_button.clicked.connect(self.on_triples_next_page)
+        triples_nav.addWidget(self.triples_next_button)
+
+        self.triples_last_button = QPushButton("Last")
+        self.triples_last_button.setEnabled(False)
+        self.triples_last_button.clicked.connect(self.on_triples_last_page)
+        triples_nav.addWidget(self.triples_last_button)
+
+        triples_layout.addLayout(triples_nav)
 
         self.triples_table = QTableWidget(0, 3)
         self.triples_table.setHorizontalHeaderLabels(["Subject", "Predicate", "Object"])
@@ -387,12 +497,14 @@ class KGExplorerWindow(QMainWindow):
         self.tabs.addTab(triples_tab, "Triples")
 
         query_tab = QWidget()
+        self.query_tab = query_tab
         query_outer = QHBoxLayout(query_tab)
 
         query_group = QGroupBox("Preset SPARQL Queries")
         query_group_layout = QVBoxLayout(query_group)
 
         self.query_list = QListWidget()
+        self.query_list.currentItemChanged.connect(self.on_query_preset_changed)
         query_group_layout.addWidget(self.query_list, 1)
 
         pmid_row = QHBoxLayout()
@@ -416,13 +528,29 @@ class KGExplorerWindow(QMainWindow):
 
         query_outer.addWidget(query_group)
 
+        query_right_panel = QWidget()
+        query_right_layout = QVBoxLayout(query_right_panel)
+        query_right_layout.setContentsMargins(0, 0, 0, 0)
+
+        query_right_layout.addWidget(QLabel("Query Text (editable)"))
+        self.query_text_editor = QTextEdit()
+        self.query_text_editor.setPlaceholderText("Select a query from the left to load it here")
+        self.query_text_editor.setAcceptRichText(False)
+        self.query_text_editor.setMinimumHeight(160)
+        query_right_layout.addWidget(self.query_text_editor)
+
+        query_right_layout.addWidget(QLabel("Results"))
+
         self.query_results_table = QTableWidget(0, 0)
         self.query_results_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.query_results_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.query_results_table.itemSelectionChanged.connect(self.on_query_selection_changed)
-        query_outer.addWidget(self.query_results_table, 1)
+        query_right_layout.addWidget(self.query_results_table, 1)
+
+        query_outer.addWidget(query_right_panel, 1)
 
         self.tabs.addTab(query_tab, "Queries")
+        self.tabs.setCurrentIndex(0)
 
         return panel
 
@@ -457,25 +585,37 @@ class KGExplorerWindow(QMainWindow):
         self.network_summary_label.setWordWrap(True)
         network_controls.addWidget(self.network_summary_label, 1)
 
+        clear_network_selection_button = QPushButton("Clear selection")
+        clear_network_selection_button.clicked.connect(self.on_clear_network_selection_clicked)
+        network_controls.addWidget(clear_network_selection_button)
+
         fit_button = QPushButton("Fit")
         fit_button.clicked.connect(self.fit_network_view)
         network_controls.addWidget(fit_button)
 
-        self.chk_show_detail = QCheckBox("Show detail nodes")
-        self.chk_show_detail.setChecked(False)
-        self.chk_show_detail.setToolTip(
-            "When unchecked, only publication and table-level nodes are shown.\n"
-            "Check to reveal row and data nodes."
+        network_controls.addWidget(QLabel("View:"))
+        self.network_detail_mode = QComboBox()
+        self.network_detail_mode.addItem("Overview", "overview")
+        self.network_detail_mode.addItem("Tables", "tables")
+        self.network_detail_mode.addItem("Full", "full")
+        self.network_detail_mode.setCurrentIndex(0)
+        self.network_detail_mode.setToolTip(
+            "Overview: publications and table roots only.\n"
+            "Tables: add direct children of table roots.\n"
+            "Full: show all nodes."
         )
-        self.chk_show_detail.toggled.connect(self.refresh_network_view)
-        network_controls.addWidget(self.chk_show_detail)
+        self.network_detail_mode.currentIndexChanged.connect(self.refresh_network_view)
+        network_controls.addWidget(self.network_detail_mode)
 
         network_layout.addLayout(network_controls)
 
         self.network_legend_text = QTextBrowser()
         self.network_legend_text.setReadOnly(True)
+        self.network_legend_text.setOpenLinks(False)
+        self.network_legend_text.setOpenExternalLinks(False)
         self.network_legend_text.setMaximumHeight(150)
         self.network_legend_text.setPlaceholderText("Table color legend will appear after graph render")
+        self.network_legend_text.anchorClicked.connect(self.on_network_legend_link_clicked)
         network_layout.addWidget(self.network_legend_text)
 
         self.network_scene = QGraphicsScene(self)
@@ -507,6 +647,28 @@ class KGExplorerWindow(QMainWindow):
         self.query_list.clear()
         for query_name in self.query_service.list_query_files():
             self.query_list.addItem(query_name)
+        if self.query_list.count() > 0:
+            self.query_list.setCurrentRow(0)
+
+    def on_query_preset_changed(self, current: Any, previous: Any = None) -> None:
+        del previous
+        if current is None:
+            self.query_text_editor.clear()
+            return
+
+        query_name = current.text().strip()
+        if not query_name:
+            self.query_text_editor.clear()
+            return
+
+        try:
+            query_text = self.query_service.load_query_text(query_name)
+        except Exception as exc:
+            self.query_status_label.setText(f"Could not load query text: {exc}")
+            self.query_text_editor.clear()
+            return
+
+        self.query_text_editor.setPlainText(query_text)
 
     def _populate_graph_list(self) -> None:
         current = self.graph_combo.currentText().strip()
@@ -614,6 +776,8 @@ class KGExplorerWindow(QMainWindow):
         self.binning_metadata = binning_metadata
         self.all_triples = all_triples
         self.filtered_triples = list(self.all_triples)
+        self._rebuild_scope_hierarchy()
+        self._populate_overview_tree()
 
         if os.path.isdir(self.graph_dir):
             graph_name = os.path.basename(graph_path)
@@ -645,12 +809,13 @@ class KGExplorerWindow(QMainWindow):
         self._filter_timer.start()
 
     def apply_filters(self) -> None:
+        self._reset_triples_paging()
         sf = self.subject_filter.text().strip().lower()
         pf = self.predicate_filter.text().strip().lower()
         of = self.object_filter.text().strip().lower()
 
         if not sf and not pf and not of:
-            self.filtered_triples = list(self.all_triples)
+            self.filtered_triples = self._apply_scope_selection(self.all_triples)
             self._render_current_triples_table()
             self.refresh_network_view()
             return
@@ -688,7 +853,7 @@ class KGExplorerWindow(QMainWindow):
                 continue
             filtered.append((subj, pred, obj))
 
-        self.filtered_triples = filtered
+        self.filtered_triples = self._apply_scope_selection(filtered)
         self._render_current_triples_table()
         self.refresh_network_view()
 
@@ -707,26 +872,358 @@ class KGExplorerWindow(QMainWindow):
             self.subject_filter.blockSignals(False)
         self.apply_filters()
 
-    def _focused_triples(self) -> List[Tuple[str, str, str]]:
-        if not self._network_focus_identifiers:
-            return self.filtered_triples
+    def clear_single_filter(self, field_name: str) -> None:
+        if field_name == "subject":
+            self.subject_filter.clear()
+            return
+        if field_name == "predicate":
+            self.predicate_filter.clear()
+            return
+        if field_name == "object":
+            self.object_filter.clear()
 
-        target_identifiers = set(self._network_focus_identifiers)
-        return [
-            (subj, pred, obj)
-            for subj, pred, obj in self.filtered_triples
-            if subj in target_identifiers or obj in target_identifiers
-        ]
+    def on_clear_network_selection_clicked(self) -> None:
+        self._network_focus_identifiers = []
+        self._select_network_nodes([])
+        self._reset_triples_paging()
+        self._render_current_triples_table()
+
+    def set_predicate_filter_preset(self, predicate: str) -> None:
+        self.predicate_filter.setText(predicate)
+        self.predicate_filter.setFocus()
+        self.predicate_filter.selectAll()
+
+    def _rebuild_scope_hierarchy(self) -> None:
+        publication_tables: Dict[str, List[str]] = {}
+        table_publication: Dict[str, str] = {}
+        outgoing: Dict[str, List[str]] = {}
+
+        for subj, pred, obj in self.all_triples:
+            outgoing.setdefault(subj, []).append(obj)
+            if self._is_has_output_predicate(pred) and self._is_publication_node(subj):
+                tables = publication_tables.setdefault(subj, [])
+                if obj not in tables:
+                    tables.append(obj)
+                table_publication.setdefault(obj, subj)
+
+        table_lineages: Dict[str, Set[str]] = {}
+        table_row_counts: Dict[str, int] = {}
+        for tables in publication_tables.values():
+            for table_id in tables:
+                children = set(outgoing.get(table_id, []))
+                table_row_counts[table_id] = len(children)
+
+                lineage: Set[str] = {table_id}
+                frontier = [table_id]
+                while frontier:
+                    current = frontier.pop()
+                    for nxt in outgoing.get(current, []):
+                        if nxt in lineage:
+                            continue
+                        lineage.add(nxt)
+                        frontier.append(nxt)
+                table_lineages[table_id] = lineage
+
+        for pub_id in publication_tables:
+            publication_tables[pub_id].sort()
+
+        self._scope_publication_tables = dict(sorted(publication_tables.items(), key=lambda kv: kv[0].lower()))
+        self._scope_table_publication = table_publication
+        self._scope_table_lineages = table_lineages
+        self._scope_table_row_counts = table_row_counts
+
+    def _populate_overview_tree(self) -> None:
+        previous_selection = self._selected_table_ids()
+        has_existing_tree = self.overview_tree.topLevelItemCount() > 0
+
+        self._overview_tree_updating = True
+        try:
+            self.overview_tree.clear()
+            total_tables = 0
+
+            for publication_id, table_ids in self._scope_publication_tables.items():
+                pub_label = self.graph_service.display_value_with_uuid_context(
+                    publication_id,
+                    input_dir=self.input_dir,
+                    graph_path=self.current_graph_path,
+                    resolve_row_context=True,
+                )
+                pub_item = QTreeWidgetItem([pub_label, ""])
+                pub_item.setData(0, OVERVIEW_KIND_ROLE, "publication")
+                pub_item.setData(0, OVERVIEW_ID_ROLE, publication_id)
+                pub_item.setFlags(pub_item.flags() | Qt.ItemIsUserCheckable)
+
+                for table_id in table_ids:
+                    table_label = self.graph_service.display_value_with_uuid_context(
+                        table_id,
+                        input_dir=self.input_dir,
+                        graph_path=self.current_graph_path,
+                        resolve_row_context=True,
+                    )
+                    row_count = self._scope_table_row_counts.get(table_id, 0)
+                    table_item = QTreeWidgetItem([table_label, str(row_count)])
+                    table_item.setData(0, OVERVIEW_KIND_ROLE, "table")
+                    table_item.setData(0, OVERVIEW_ID_ROLE, table_id)
+                    table_item.setFlags(table_item.flags() | Qt.ItemIsUserCheckable)
+
+                    is_checked = True
+                    if has_existing_tree:
+                        is_checked = table_id in previous_selection
+                    table_item.setCheckState(0, Qt.Checked if is_checked else Qt.Unchecked)
+
+                    pub_item.addChild(table_item)
+                    total_tables += 1
+
+                self._refresh_publication_check_state(pub_item)
+                self.overview_tree.addTopLevelItem(pub_item)
+
+            self.overview_tree.expandAll()
+            self.overview_tree.resizeColumnToContents(0)
+            self.overview_summary_label.setText(
+                f"Publications: {len(self._scope_publication_tables)} | "
+                f"Tables: {total_tables} | Selected tables: {len(self._selected_table_ids())}"
+            )
+        finally:
+            self._overview_tree_updating = False
+
+    def _set_all_overview_tables(self, state: Qt.CheckState) -> None:
+        self._overview_tree_updating = True
+        try:
+            for top_idx in range(self.overview_tree.topLevelItemCount()):
+                pub_item = self.overview_tree.topLevelItem(top_idx)
+                for child_idx in range(pub_item.childCount()):
+                    table_item = pub_item.child(child_idx)
+                    if table_item.data(0, OVERVIEW_KIND_ROLE) == "table":
+                        table_item.setCheckState(0, state)
+                self._refresh_publication_check_state(pub_item)
+        finally:
+            self._overview_tree_updating = False
+        self._refresh_overview_summary()
+        self._begin_busy_cursor("Applying overview scope...")
+        try:
+            self.apply_filters()
+        finally:
+            self._end_busy_cursor(f"Scope applied: {len(self.filtered_triples)} triples")
+
+    def _refresh_publication_check_state(self, publication_item: QTreeWidgetItem) -> None:
+        checked = 0
+        partial = 0
+        total = 0
+        for child_idx in range(publication_item.childCount()):
+            child = publication_item.child(child_idx)
+            if child.data(0, OVERVIEW_KIND_ROLE) != "table":
+                continue
+            total += 1
+            state = child.checkState(0)
+            if state == Qt.Checked:
+                checked += 1
+            elif state == Qt.PartiallyChecked:
+                partial += 1
+
+        if total == 0:
+            publication_item.setCheckState(0, Qt.Unchecked)
+            return
+        if checked == total:
+            publication_item.setCheckState(0, Qt.Checked)
+            return
+        if checked == 0 and partial == 0:
+            publication_item.setCheckState(0, Qt.Unchecked)
+            return
+        publication_item.setCheckState(0, Qt.PartiallyChecked)
+
+    def _refresh_overview_summary(self) -> None:
+        total_tables = sum(len(tables) for tables in self._scope_publication_tables.values())
+        self.overview_summary_label.setText(
+            f"Publications: {len(self._scope_publication_tables)} | "
+            f"Tables: {total_tables} | Selected tables: {len(self._selected_table_ids())}"
+        )
+
+    def on_overview_tree_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
+        if column != 0 or self._overview_tree_updating:
+            return
+
+        kind = item.data(0, OVERVIEW_KIND_ROLE)
+        if kind == "publication":
+            state = item.checkState(0)
+            if state in (Qt.Checked, Qt.Unchecked):
+                self._overview_tree_updating = True
+                try:
+                    for child_idx in range(item.childCount()):
+                        child = item.child(child_idx)
+                        if child.data(0, OVERVIEW_KIND_ROLE) == "table":
+                            child.setCheckState(0, state)
+                finally:
+                    self._overview_tree_updating = False
+        elif kind == "table":
+            parent = item.parent()
+            if parent is not None:
+                self._overview_tree_updating = True
+                try:
+                    self._refresh_publication_check_state(parent)
+                finally:
+                    self._overview_tree_updating = False
+
+        self._refresh_overview_summary()
+        self._begin_busy_cursor("Applying overview scope...")
+        try:
+            self.apply_filters()
+        finally:
+            self._end_busy_cursor(f"Scope applied: {len(self.filtered_triples)} triples")
+
+    def _selected_table_ids(self) -> Set[str]:
+        selected: Set[str] = set()
+        for top_idx in range(self.overview_tree.topLevelItemCount()):
+            pub_item = self.overview_tree.topLevelItem(top_idx)
+            for child_idx in range(pub_item.childCount()):
+                table_item = pub_item.child(child_idx)
+                if table_item.data(0, OVERVIEW_KIND_ROLE) != "table":
+                    continue
+                if table_item.checkState(0) != Qt.Checked:
+                    continue
+                table_id = str(table_item.data(0, OVERVIEW_ID_ROLE) or "")
+                if table_id:
+                    selected.add(table_id)
+        return selected
+
+    def _apply_scope_selection(self, triples: Iterable[Tuple[str, str, str]]) -> List[Tuple[str, str, str]]:
+        selected_tables = self._selected_table_ids()
+        if not selected_tables:
+            return []
+
+        scoped_nodes: Set[str] = set()
+        for table_id in selected_tables:
+            scoped_nodes.update(self._scope_table_lineages.get(table_id, {table_id}))
+            publication_id = self._scope_table_publication.get(table_id, "")
+            if publication_id:
+                scoped_nodes.add(publication_id)
+
+        scoped: List[Tuple[str, str, str]] = []
+        for subj, pred, obj in triples:
+            # Keep publication -> has_output edges only for currently selected tables.
+            if self._is_publication_node(subj) and self._is_has_output_predicate(pred):
+                if obj in selected_tables:
+                    scoped.append((subj, pred, obj))
+                continue
+            if subj in scoped_nodes or obj in scoped_nodes:
+                scoped.append((subj, pred, obj))
+        return scoped
+
+    def _scope_nodes_for_selected_tables(self) -> Set[str]:
+        selected_tables = self._selected_table_ids()
+        scoped_nodes: Set[str] = set()
+        for table_id in selected_tables:
+            scoped_nodes.update(self._scope_table_lineages.get(table_id, {table_id}))
+            publication_id = self._scope_table_publication.get(table_id, "")
+            if publication_id:
+                scoped_nodes.add(publication_id)
+        return scoped_nodes
+
+    def _build_query_graph_for_selection(self) -> Tuple[Any, int, int]:
+        if self.graph is None:
+            return None, 0, 0
+
+        selected_tables = self._selected_table_ids()
+        if not selected_tables:
+            return None, 0, 0
+
+        all_tables = set(self._scope_table_publication.keys())
+        if all_tables and selected_tables == all_tables:
+            triple_count = len(self.all_triples)
+            return self.graph, triple_count, triple_count
+
+        scoped_nodes = self._scope_nodes_for_selected_tables()
+        source_graph = self.graph
+        graph_type = type(source_graph)
+        scoped_graph = graph_type()
+
+        kept = 0
+        total = 0
+        for subj, pred, obj in source_graph:
+            total += 1
+            subj_s = str(subj)
+            obj_s = str(obj)
+
+            if self._is_publication_node(subj_s) and self._is_has_output_predicate(str(pred)):
+                if obj_s in selected_tables:
+                    scoped_graph.add((subj, pred, obj))
+                    kept += 1
+                continue
+
+            if subj_s in scoped_nodes or obj_s in scoped_nodes:
+                scoped_graph.add((subj, pred, obj))
+                kept += 1
+
+        return scoped_graph, kept, total
+
+    def _focused_triples(self) -> List[Tuple[str, str, str]]:
+        return self.filtered_triples
+
+    def _set_triples_page_for_identifiers(self, identifiers: Iterable[str]) -> None:
+        target_identifiers = {identifier for identifier in identifiers if identifier}
+        if not target_identifiers:
+            return
+
+        match_index = -1
+        for idx, (subj, _, obj) in enumerate(self._iter_prioritized_triples(self.filtered_triples)):
+            if subj in target_identifiers or obj in target_identifiers:
+                match_index = idx
+                break
+
+        if match_index >= 0:
+            self._triples_page_index = match_index // DEFAULT_VISIBLE_TRIPLES
 
     def _render_current_triples_table(self) -> None:
         self._render_triples_table(self._focused_triples())
 
+    def _reset_triples_paging(self) -> None:
+        self._triples_page_index = 0
+
+    def on_triples_prev_page(self) -> None:
+        if self._triples_page_index <= 0:
+            return
+        self._triples_page_index -= 1
+        self._render_current_triples_table()
+
+    def on_triples_first_page(self) -> None:
+        if self._triples_page_index == 0:
+            return
+        self._triples_page_index = 0
+        self._render_current_triples_table()
+
+    def on_triples_next_page(self) -> None:
+        total = len(self._focused_triples())
+        page_count = max(1, math.ceil(total / DEFAULT_VISIBLE_TRIPLES)) if total else 1
+        if self._triples_page_index >= page_count - 1:
+            return
+        self._triples_page_index += 1
+        self._render_current_triples_table()
+
+    def on_triples_last_page(self) -> None:
+        total = len(self._focused_triples())
+        page_count = max(1, math.ceil(total / DEFAULT_VISIBLE_TRIPLES)) if total else 1
+        target_index = max(0, page_count - 1)
+        if self._triples_page_index == target_index:
+            return
+        self._triples_page_index = target_index
+        self._render_current_triples_table()
+
     def _render_triples_table(self, triples: List[Tuple[str, str, str]]) -> None:
-        to_show = triples[:DEFAULT_VISIBLE_TRIPLES]
+        total = len(triples)
+        page_size = DEFAULT_VISIBLE_TRIPLES
+        page_count = max(1, math.ceil(total / page_size)) if total else 1
+        if self._triples_page_index >= page_count:
+            self._triples_page_index = max(0, page_count - 1)
+
+        start = self._triples_page_index * page_size
+        to_show = self._prioritized_triple_slice(triples, start, page_size)
         self.triples_table.blockSignals(True)
         try:
             self.triples_table.setRowCount(len(to_show))
             self.triples_table.setColumnCount(3)
+            if to_show:
+                self.triples_table.setVerticalHeaderLabels([str(start + idx + 1) for idx in range(len(to_show))])
+            else:
+                self.triples_table.setVerticalHeaderLabels([])
             display_cache: Dict[str, str] = {}
 
             def uuid_display(value: str) -> str:
@@ -759,14 +1256,58 @@ class KGExplorerWindow(QMainWindow):
                     self._make_table_item(obj, raw_value=obj, display_override=uuid_display(obj)),
                 )
 
-            suffix = ""
-            if len(triples) > DEFAULT_VISIBLE_TRIPLES:
-                suffix = f" (showing first {DEFAULT_VISIBLE_TRIPLES})"
-            self.triples_count_label.setText(f"Triples: {len(triples)}{suffix}")
+            if total == 0:
+                self.triples_count_label.setText("Triples: 0")
+            else:
+                end = start + len(to_show)
+                suffix = ""
+                if total > page_size:
+                    suffix = " (structural rows first)"
+                self.triples_count_label.setText(
+                    f"Triples: {total} (showing {start + 1}-{end}){suffix}"
+                )
+
+            self.triples_page_label.setText(f"Page {self._triples_page_index + 1}/{page_count}")
+            self.triples_first_button.setEnabled(self._triples_page_index > 0)
+            self.triples_prev_button.setEnabled(self._triples_page_index > 0)
+            self.triples_next_button.setEnabled(self._triples_page_index < page_count - 1)
+            self.triples_last_button.setEnabled(self._triples_page_index < page_count - 1)
             if len(to_show) <= 1000:
                 self.triples_table.resizeColumnsToContents()
         finally:
             self.triples_table.blockSignals(False)
+
+    def _triple_priority_bucket(self, triple: Tuple[str, str, str]) -> int:
+        subj, pred, _ = triple
+        is_publication = self._is_publication_node(subj)
+        is_has_output = self._is_has_output_predicate(pred)
+        if is_publication and is_has_output:
+            return 0
+        if is_has_output or is_publication:
+            return 1
+        return 2
+
+    def _iter_prioritized_triples(self, triples: Iterable[Tuple[str, str, str]]) -> Iterable[Tuple[str, str, str]]:
+        tier1: List[Tuple[str, str, str]] = []
+        tier2: List[Tuple[str, str, str]] = []
+        tier3: List[Tuple[str, str, str]] = []
+        for triple in triples:
+            bucket = self._triple_priority_bucket(triple)
+            if bucket == 0:
+                tier1.append(triple)
+            elif bucket == 1:
+                tier2.append(triple)
+            else:
+                tier3.append(triple)
+        return itertools.chain(tier1, tier2, tier3)
+
+    def _prioritized_triple_slice(
+        self,
+        triples: Iterable[Tuple[str, str, str]],
+        offset: int,
+        limit: int,
+    ) -> List[Tuple[str, str, str]]:
+        return list(itertools.islice(self._iter_prioritized_triples(triples), offset, offset + limit))
 
     def on_run_query_clicked(self) -> None:
         if self.graph is None:
@@ -780,14 +1321,34 @@ class KGExplorerWindow(QMainWindow):
 
         query_name = selected[0].text()
         pmid = self.pmid_input.text().strip()
+        query_text = self.query_text_editor.toPlainText().strip()
+        if not query_text:
+            QMessageBox.warning(self, "Empty Query", "Query text is empty. Select a preset or enter a query.")
+            return
 
-        self.query_status_label.setText(f"Running {query_name}...")
+        scoped_graph, scoped_triples, total_triples = self._build_query_graph_for_selection()
+        if scoped_graph is None:
+            QMessageBox.information(
+                self,
+                "No Scope Selected",
+                "Select at least one table in the Overview tab before running a query.",
+            )
+            return
+
+        if scoped_graph is self.graph:
+            self.query_status_label.setText(f"Running {query_name} on full selected scope...")
+        else:
+            self.query_status_label.setText(
+                f"Running {query_name} on scoped selection ({scoped_triples}/{total_triples} triples)..."
+            )
         self.run_query_button.setEnabled(False)
+        self._begin_busy_cursor("Running query...")
 
         worker = QueryWorker(
-            graph=self.graph,
+            graph=scoped_graph,
             query_name=query_name,
             pmid=pmid,
+            query_text_override=query_text,
             query_service=self.query_service,
             callback=self.query_result_signal.emit,
         )
@@ -795,6 +1356,7 @@ class KGExplorerWindow(QMainWindow):
         self._active_worker = worker
 
     def on_query_result(self, headers: List[str], rows: List[List[str]], error: str) -> None:
+        self._end_busy_cursor("Query finished")
         self.run_query_button.setEnabled(True)
 
         if error:
@@ -804,8 +1366,28 @@ class KGExplorerWindow(QMainWindow):
 
         self.current_query_result = QueryResultTable(headers=headers, rows=rows)
         self._render_query_results(headers, rows)
-        self.tabs.setCurrentIndex(1)
+        self.tabs.setCurrentWidget(self.query_tab)
         self.query_status_label.setText(f"Query returned {len(rows)} rows")
+
+    def _begin_busy_cursor(self, status_message: str = "") -> None:
+        if status_message:
+            status_bar = self.statusBar()
+            if status_bar is not None:
+                status_bar.showMessage(status_message)
+        if self._busy_cursor_depth == 0:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+        self._busy_cursor_depth += 1
+
+    def _end_busy_cursor(self, status_message: str = "") -> None:
+        if self._busy_cursor_depth <= 0:
+            return
+        self._busy_cursor_depth -= 1
+        if self._busy_cursor_depth == 0:
+            QApplication.restoreOverrideCursor()
+            if status_message:
+                status_bar = self.statusBar()
+                if status_bar is not None:
+                    status_bar.showMessage(status_message)
 
     def _render_query_results(self, headers: List[str], rows: List[List[str]]) -> None:
         self.query_results_table.setColumnCount(len(headers))
@@ -847,6 +1429,9 @@ class KGExplorerWindow(QMainWindow):
             self._network_group_edge_colors = {}
             self._network_table_colors = {}
             self._network_table_publications = {}
+            self._network_table_lineages = {}
+            self._network_table_children = {}
+            self._network_legend_table_links = {}
 
             if not self.filtered_triples:
                 self.network_summary_label.setText("Nodes: 0 | Edges: 0")
@@ -861,30 +1446,8 @@ class KGExplorerWindow(QMainWindow):
                     resolve_row_context=True,
                 )
 
-            # Prioritise structural triples (publication-level and has_output edges)
-            # so they are always included regardless of their position in the data,
-            # without sorting the entire (potentially very large) triple list.
-            # Tier 1: publication → has_output edges (few; define table roots)
-            # Tier 2: other has_output edges + any publication metadata triples
-            # Tier 3: everything else
-            # This ensures pub→table skeleton is always within the first max_edges
-            # regardless of where those triples happen to fall in the source file.
-            _tier1: List[Tuple[str, str, str]] = []
-            _tier2: List[Tuple[str, str, str]] = []
-            _tier3: List[Tuple[str, str, str]] = []
-            for _t in self.filtered_triples:
-                _is_pub = self._is_publication_node(_t[0])
-                _is_hop = self._is_has_output_predicate(_t[1])
-                if _is_pub and _is_hop:
-                    _tier1.append(_t)
-                elif _is_hop or _is_pub:
-                    _tier2.append(_t)
-                else:
-                    _tier3.append(_t)
-            _prioritised = itertools.chain(_tier1, _tier2, _tier3)
-
             model = self.graph_service.build_network_model(
-                _prioritised,
+                self._iter_prioritized_triples(self.filtered_triples),
                 max_edges=int(self.network_edge_limit.value()),
                 label_resolver=network_label,
             )
@@ -894,23 +1457,20 @@ class KGExplorerWindow(QMainWindow):
                 self._network_group_edge_colors,
                 self._network_table_colors,
                 self._network_table_publications,
+                self._network_table_lineages,
+                self._network_table_children,
             ) = self._compute_table_lineage_colors(model)
 
             self._network_node_lookup = {node.identifier: node for node in model.nodes}
             positions = self._compute_network_positions(model.nodes)
 
-            hide_detail = not self.chk_show_detail.isChecked()
-            structural_ids: Set[str] = set()
-            if hide_detail:
-                structural_ids = set(self._network_table_colors.keys())
-                for _n in model.nodes:
-                    if self._is_publication_node(_n.identifier):
-                        structural_ids.add(_n.identifier)
+            detail_mode = self._network_detail_mode_value()
+            visible_ids = self._visible_network_identifiers(model.nodes, detail_mode)
 
             node_items: Dict[str, NetworkNodeItem] = {}
 
             for node in model.nodes:
-                if hide_detail and node.identifier not in structural_ids:
+                if node.identifier not in visible_ids:
                     continue
                 pos = positions.get(node.identifier)
                 if pos is None:
@@ -949,7 +1509,7 @@ class KGExplorerWindow(QMainWindow):
                 self._network_edge_items.append(edge_item)
 
             self._network_node_items = node_items
-            detail_note = " (detail hidden)" if hide_detail else ""
+            detail_note = f" ({detail_mode})"
             self.network_summary_label.setText(
                 f"Nodes: {len(node_items)} | Edges: {len(self._network_edge_items)}{detail_note}"
             )
@@ -1006,6 +1566,8 @@ class KGExplorerWindow(QMainWindow):
         Dict[Tuple[str, str, str], QColor],
         Dict[str, QColor],
         Dict[str, str],
+        Dict[str, Set[str]],
+        Dict[str, Set[str]],
     ]:
         root_edges: List[Tuple[str, str, str]] = []
         table_publications: Dict[str, str] = {}
@@ -1030,24 +1592,33 @@ class KGExplorerWindow(QMainWindow):
 
         node_to_tables: Dict[str, set[str]] = {}
         edge_to_tables: Dict[Tuple[str, str, str], set[str]] = {}
+        table_lineages: Dict[str, Set[str]] = {}
+        table_children: Dict[str, Set[str]] = {}
 
         for source, predicate, target in root_edges:
             edge_key = (source, predicate, target)
             edge_to_tables.setdefault(edge_key, set()).add(target)
 
         for table_root in table_roots:
-            frontier = [table_root]
+            lineage_nodes: Set[str] = {table_root}
+            direct_children: Set[str] = set()
+            frontier: List[Tuple[str, int]] = [(table_root, 0)]
             seen_nodes = {table_root}
             while frontier:
-                current = frontier.pop()
+                current, depth = frontier.pop()
                 node_to_tables.setdefault(current, set()).add(table_root)
                 for edge_key in outgoing.get(current, []):
                     edge_to_tables.setdefault(edge_key, set()).add(table_root)
                     nxt = edge_key[2]
+                    lineage_nodes.add(nxt)
+                    if depth == 0:
+                        direct_children.add(nxt)
                     if nxt in seen_nodes:
                         continue
                     seen_nodes.add(nxt)
-                    frontier.append(nxt)
+                    frontier.append((nxt, depth + 1))
+            table_lineages[table_root] = lineage_nodes
+            table_children[table_root] = direct_children
 
         table_roots_sorted = sorted(table_roots)
         table_colors: Dict[str, QColor] = {
@@ -1072,9 +1643,10 @@ class KGExplorerWindow(QMainWindow):
             else:
                 edge_colors[edge_key] = neutral
 
-        return node_colors, edge_colors, table_colors, table_publications
+        return node_colors, edge_colors, table_colors, table_publications, table_lineages, table_children
 
     def _render_network_legend(self, label_resolver: Any) -> None:
+        self._network_legend_table_links = {}
         if not self._network_table_colors:
             self._set_html_text(self.network_legend_text, "<b>Table legend:</b><br>None")
             return
@@ -1088,20 +1660,84 @@ class KGExplorerWindow(QMainWindow):
             legend_entries.append((publication_label.lower(), table_label.lower(), table_id, color))
 
         current_pub_display = ""
-        for _, _, table_id, color in sorted(legend_entries):
+        for index, (_, _, table_id, color) in enumerate(sorted(legend_entries)):
             publication_id = self._network_table_publications.get(table_id, "")
             publication_label = html.escape(str(label_resolver(publication_id))) if publication_id else "(no publication root)"
             table_label = html.escape(str(label_resolver(table_id)))
             color_hex = color.name()
+            link_key = str(index)
+            self._network_legend_table_links[link_key] = table_id
             if publication_label != current_pub_display:
                 parts.append(f"<b>{publication_label}</b>")
                 current_pub_display = publication_label
             parts.append(
-                f'<span style="display:inline-block;width:10px;height:10px;border:1px solid #555;background:{color_hex};"></span> '
-                f"{table_label}"
+                f'<a href="table:{link_key}">'
+                f'<span style="color:{color_hex}; font-size:14pt;">&#9632;</span> '
+                f"{table_label}</a>"
             )
 
         self._set_html_text(self.network_legend_text, "<br>".join(parts))
+
+    def _network_detail_mode_value(self) -> str:
+        return str(self.network_detail_mode.currentData() or "overview")
+
+    def _visible_network_identifiers(self, nodes: List[NetworkNode], detail_mode: str) -> Set[str]:
+        if detail_mode == "full":
+            return {node.identifier for node in nodes}
+
+        visible_ids: Set[str] = set(self._network_table_colors.keys())
+        for node in nodes:
+            if self._is_publication_node(node.identifier):
+                visible_ids.add(node.identifier)
+
+        if detail_mode == "tables":
+            for child_ids in self._network_table_children.values():
+                visible_ids.update(child_ids)
+
+        return visible_ids
+
+    def on_network_legend_link_clicked(self, url: QUrl) -> None:
+        if url.scheme() != "table":
+            return
+
+        link_key = url.path().lstrip("/")
+        if not link_key:
+            link_key = url.toString().split(":", 1)[-1]
+        table_id = self._network_legend_table_links.get(link_key)
+        if not table_id:
+            return
+
+        self._focus_table_lineage(table_id)
+
+    def _focus_table_lineage(self, table_id: str) -> None:
+        lineage_ids = set(self._network_table_lineages.get(table_id, set()))
+        if not lineage_ids:
+            lineage_ids = {table_id}
+
+        publication_id = self._network_table_publications.get(table_id, "")
+        if publication_id:
+            lineage_ids.add(publication_id)
+
+        visible_ids = [identifier for identifier in lineage_ids if identifier in self._network_node_items]
+        self._select_network_nodes(visible_ids)
+
+        detail_values = [
+            f"Table: {self.graph_service.display_value_with_uuid_context(table_id, input_dir=self.input_dir, graph_path=self.current_graph_path, resolve_row_context=True)}",
+            f"Publication: {self.graph_service.display_value_with_uuid_context(publication_id, input_dir=self.input_dir, graph_path=self.current_graph_path, resolve_row_context=True) if publication_id else '(none)'}",
+            f"Lineage nodes: {len(lineage_ids)}",
+            f"Visible nodes in current view: {len(visible_ids)}",
+        ]
+
+        self._selection_sync_active = True
+        try:
+            self._network_focus_identifiers = sorted(lineage_ids)
+            self._update_detail_and_metadata(detail_values)
+            self._set_triples_page_for_identifiers(lineage_ids)
+            self._render_current_triples_table()
+            self.tabs.setCurrentWidget(self.triples_tab)
+            self._select_triple_rows_for_identifiers(lineage_ids)
+        finally:
+            self._selection_sync_active = False
 
     def _apply_network_node_highlight(self, identifiers: set[str]) -> None:
         for identifier, item in self._network_node_items.items():
@@ -1262,6 +1898,7 @@ class KGExplorerWindow(QMainWindow):
         if not selected_items:
             self._network_focus_identifiers = []
             if not self._selection_sync_active:
+                self._reset_triples_paging()
                 self._render_current_triples_table()
             self._apply_network_node_highlight(set())
             self._apply_network_edge_highlight(set(), set())
@@ -1276,6 +1913,7 @@ class KGExplorerWindow(QMainWindow):
         if not node_identifiers:
             self._network_focus_identifiers = []
             if not self._selection_sync_active:
+                self._reset_triples_paging()
                 self._render_current_triples_table()
             self._apply_network_node_highlight(set())
             self._apply_network_edge_highlight(set(), set())
@@ -1300,8 +1938,9 @@ class KGExplorerWindow(QMainWindow):
         self._selection_sync_active = True
         try:
             self._network_focus_identifiers = node_identifiers
+            self._set_triples_page_for_identifiers(node_identifiers)
             self._render_current_triples_table()
-            self.tabs.setCurrentIndex(0)
+            self.tabs.setCurrentWidget(self.triples_tab)
             self._select_triple_rows_for_identifiers(node_identifiers)
         finally:
             self._selection_sync_active = False
