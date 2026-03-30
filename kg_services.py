@@ -171,6 +171,24 @@ class GraphDataService:
         self._hgnc_symbol_cache[hgnc_id] = None
         return None
 
+    def gene_sort_key(self, gene_id: str) -> Tuple[int, int, str]:
+        hgnc_id = self.extract_hgnc_id(gene_id)
+        if hgnc_id.startswith("HGNC:"):
+            numeric = hgnc_id.split(":", 1)[1]
+            if numeric.isdigit():
+                return (0, int(numeric), gene_id.lower())
+        return (1, 0, gene_id.lower())
+
+    def format_gene_display(self, gene_id: str) -> str:
+        hgnc_id = self.extract_hgnc_id(gene_id)
+        if not hgnc_id:
+            return gene_id
+
+        symbol = self.resolve_hgnc_symbol(gene_id)
+        if symbol:
+            return f"{hgnc_id} ({symbol})"
+        return hgnc_id
+
     def display_value(self, value: str) -> str:
         text = str(value).strip()
         if not text:

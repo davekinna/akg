@@ -11,10 +11,11 @@ import math
 import os
 import re
 import threading
+from time import perf_counter
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from PyQt5.QtCore import QPoint, QPointF, Qt, QTimer, QUrl, pyqtSignal
-from PyQt5.QtGui import QBrush, QColor, QKeySequence, QPainter, QPen
+from PyQt5.QtGui import QBrush, QColor, QFont, QKeySequence, QPainter, QPen
 from PyQt5.QtWidgets import (
     QApplication,
     QComboBox,
@@ -274,11 +275,19 @@ class KGExplorerWindow(QMainWindow):
         self._scope_table_publication: Dict[str, str] = {}
         self._scope_table_lineages: Dict[str, Set[str]] = {}
         self._scope_table_row_counts: Dict[str, int] = {}
+        self._gene_to_rows: Dict[str, Set[str]] = {}
+        self._row_to_table: Dict[str, str] = {}
+        self._table_to_rows: Dict[str, Set[str]] = {}
+        self._row_logfc: Dict[str, str] = {}
+        self._row_pvalue: Dict[str, str] = {}
+        self._gene_display_to_id: Dict[str, str] = {}
+        self._last_scope_rebuild_seconds = 0.0
         self._overview_tree_updating = False
         self._triples_page_index = 0
         self._busy_cursor_depth = 0
         self._active_graph_worker: Optional[GraphLoadWorker] = None
         self._graph_loading_path = ""
+        self._graph_load_started_at: Optional[float] = None
         self._startup_graph_path = ""
         self._selection_sync_active = False
         self._network_focus_identifiers: List[str] = []
@@ -294,19 +303,18 @@ class KGExplorerWindow(QMainWindow):
         self._populate_graph_list()
 
         self.settings_path = os.path.join(os.getcwd(), SETTINGS_FILE)
-        startup_graph_from_settings = self._load_settings()
+        self._load_settings()
+
+        status_bar = self.statusBar()
+        if status_bar is not None:
+            font = QFont(status_bar.font())
+            font.setPointSize(max(12, font.pointSize() + 2))
+            status_bar.setFont(font)
 
         self._populate_query_list()
-        self.query_status_label.setText(self.metadata_service.status_message)
-        self.statusBar().showMessage("Ready")
-
-        if graph_path:
-            self._startup_graph_path = graph_path
-        elif startup_graph_from_settings:
-            self._startup_graph_path = startup_graph_from_settings
-
-        if self._startup_graph_path:
-            QTimer.singleShot(0, self._load_startup_graph)
+        self.query_status_label.setText("No graph loaded")
+        if status_bar is not None:
+            status_bar.showMessage("No graph loaded")
 
     def _load_startup_graph(self) -> None:
         startup_graph_path = self._startup_graph_path
@@ -392,6 +400,49 @@ class KGExplorerWindow(QMainWindow):
         overview_layout.addWidget(self.overview_summary_label)
 
         self.tabs.addTab(overview_tab, "Overview")
+
+        gene_tab = QWidget()
+        self.gene_tab = gene_tab
+        gene_layout = QVBoxLayout(gene_tab)
+
+        gene_help = QLabel(
+            "Choose a gene to list row, table, and publication provenance within the current Overview scope."
+        )
+        gene_help.setWordWrap(True)
+        gene_layout.addWidget(gene_help)
+
+        gene_controls = QHBoxLayout()
+        gene_controls.addWidget(QLabel("Gene:"))
+
+        self.gene_combo = QComboBox()
+        self.gene_combo.setEditable(True)
+        self.gene_combo.setMinimumWidth(420)
+        self.gene_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.gene_combo.setPlaceholderText("Type or pick a gene URI in scope")
+        gene_controls.addWidget(self.gene_combo, 1)
+
+        self.gene_find_button = QPushButton("Find provenance")
+        self.gene_find_button.clicked.connect(self.on_gene_find_clicked)
+        self.gene_find_button.setEnabled(False)
+        gene_controls.addWidget(self.gene_find_button)
+
+        self.gene_refresh_button = QPushButton("Refresh genes")
+        self.gene_refresh_button.clicked.connect(self.on_gene_refresh_clicked)
+        self.gene_refresh_button.setEnabled(False)
+        gene_controls.addWidget(self.gene_refresh_button)
+
+        gene_layout.addLayout(gene_controls)
+
+        self.gene_tree = QTreeWidget()
+        self.gene_tree.setHeaderLabels(["Publication / Table / Row", "Count", "LogFC", "p-value"])
+        self.gene_tree.itemDoubleClicked.connect(self.on_gene_tree_item_double_clicked)
+        gene_layout.addWidget(self.gene_tree, 1)
+
+        self.gene_summary_label = QLabel("No graph loaded")
+        self.gene_summary_label.setWordWrap(True)
+        gene_layout.addWidget(self.gene_summary_label)
+
+        self.tabs.addTab(gene_tab, "Gene")
 
         triples_tab = QWidget()
         self.triples_tab = triples_tab
@@ -736,6 +787,7 @@ class KGExplorerWindow(QMainWindow):
             return
 
         self._graph_loading_path = graph_path
+        self._graph_load_started_at = perf_counter()
         self._set_graph_loading_state(True)
         self.statusBar().showMessage(f"Loading graph: {graph_path}")
 
@@ -766,6 +818,7 @@ class KGExplorerWindow(QMainWindow):
         self._graph_loading_path = ""
 
         if error:
+            self._graph_load_started_at = None
             self._set_graph_loading_state(False)
             self.statusBar().showMessage(f"Graph load failed: {error}")
             QMessageBox.critical(self, "Load Error", error)
@@ -776,8 +829,20 @@ class KGExplorerWindow(QMainWindow):
         self.binning_metadata = binning_metadata
         self.all_triples = all_triples
         self.filtered_triples = list(self.all_triples)
+
+        status_bar = self.statusBar()
+        if status_bar is not None:
+            status_bar.showMessage("Building overview scope and provenance indexes...")
+        scope_rebuild_started = perf_counter()
         self._rebuild_scope_hierarchy()
+        self._last_scope_rebuild_seconds = perf_counter() - scope_rebuild_started
         self._populate_overview_tree()
+        self._refresh_gene_scope_options()
+
+        total_load_seconds = 0.0
+        if self._graph_load_started_at is not None:
+            total_load_seconds = perf_counter() - self._graph_load_started_at
+        self._graph_load_started_at = None
 
         if os.path.isdir(self.graph_dir):
             graph_name = os.path.basename(graph_path)
@@ -787,10 +852,17 @@ class KGExplorerWindow(QMainWindow):
                 if graph_name in self.available_graph_files:
                     self.graph_combo.setCurrentText(graph_name)
 
-        self.statusBar().showMessage(
-            f"Loaded {os.path.basename(graph_path)}: {len(self.all_triples)} triples, sidecars checked: {sidecar_count}"
+        load_message = (
+            f"Loaded {os.path.basename(graph_path)}: {len(self.all_triples)} triples, "
+            f"{len(self._gene_to_rows)} genes indexed, {len(self._row_to_table)} row links, "
+            f"scope build {self._last_scope_rebuild_seconds:.2f}s, total load {total_load_seconds:.2f}s, "
+            f"sidecars checked: {sidecar_count}"
         )
-        self.query_status_label.setText(f"Graph loaded: {os.path.basename(graph_path)}")
+        if status_bar is not None:
+            status_bar.showMessage(load_message)
+        self.query_status_label.setText(
+            f"Graph loaded: {os.path.basename(graph_path)} | scope build {self._last_scope_rebuild_seconds:.2f}s"
+        )
         self._set_graph_loading_state(False)
         self.apply_filters()
 
@@ -801,6 +873,8 @@ class KGExplorerWindow(QMainWindow):
         self.graph_combo.setEnabled(not is_loading)
         self.run_query_button.setEnabled((not is_loading) and self.graph is not None)
         self.export_button.setEnabled(not is_loading)
+        self.gene_find_button.setEnabled((not is_loading) and self.graph is not None)
+        self.gene_refresh_button.setEnabled((not is_loading) and self.graph is not None)
 
     def _load_binning_metadata(self, graph_path: str) -> None:
         self.binning_metadata = self.graph_service.load_binning_metadata(graph_path)
@@ -897,9 +971,21 @@ class KGExplorerWindow(QMainWindow):
         publication_tables: Dict[str, List[str]] = {}
         table_publication: Dict[str, str] = {}
         outgoing: Dict[str, List[str]] = {}
+        gene_to_rows: Dict[str, Set[str]] = {}
+        row_to_table: Dict[str, str] = {}
+        table_to_rows: Dict[str, Set[str]] = {}
+        row_logfc: Dict[str, str] = {}
+        row_pvalue: Dict[str, str] = {}
 
         for subj, pred, obj in self.all_triples:
             outgoing.setdefault(subj, []).append(obj)
+            if self._is_gene_predicate(pred):
+                rows = gene_to_rows.setdefault(obj, set())
+                rows.add(subj)
+            elif self._is_logfc_predicate(pred):
+                row_logfc.setdefault(subj, self._format_metric_value(obj))
+            elif self._is_pvalue_predicate(pred):
+                row_pvalue.setdefault(subj, self._format_metric_value(obj))
             if self._is_has_output_predicate(pred) and self._is_publication_node(subj):
                 tables = publication_tables.setdefault(subj, [])
                 if obj not in tables:
@@ -912,6 +998,9 @@ class KGExplorerWindow(QMainWindow):
             for table_id in tables:
                 children = set(outgoing.get(table_id, []))
                 table_row_counts[table_id] = len(children)
+                table_to_rows[table_id] = children
+                for child_id in children:
+                    row_to_table.setdefault(child_id, table_id)
 
                 lineage: Set[str] = {table_id}
                 frontier = [table_id]
@@ -931,6 +1020,11 @@ class KGExplorerWindow(QMainWindow):
         self._scope_table_publication = table_publication
         self._scope_table_lineages = table_lineages
         self._scope_table_row_counts = table_row_counts
+        self._gene_to_rows = gene_to_rows
+        self._row_to_table = row_to_table
+        self._table_to_rows = table_to_rows
+        self._row_logfc = row_logfc
+        self._row_pvalue = row_pvalue
 
     def _populate_overview_tree(self) -> None:
         previous_selection = self._selected_table_ids()
@@ -1002,6 +1096,7 @@ class KGExplorerWindow(QMainWindow):
         self._begin_busy_cursor("Applying overview scope...")
         try:
             self.apply_filters()
+            self._refresh_gene_scope_options()
         finally:
             self._end_busy_cursor(f"Scope applied: {len(self.filtered_triples)} triples")
 
@@ -1067,8 +1162,195 @@ class KGExplorerWindow(QMainWindow):
         self._begin_busy_cursor("Applying overview scope...")
         try:
             self.apply_filters()
+            self._refresh_gene_scope_options()
         finally:
             self._end_busy_cursor(f"Scope applied: {len(self.filtered_triples)} triples")
+
+    def on_gene_refresh_clicked(self) -> None:
+        self._refresh_gene_scope_options()
+
+    def _refresh_gene_scope_options(self) -> None:
+        current_gene_id = self._resolve_selected_gene_id()
+        selected_tables = self._selected_table_ids()
+
+        self.gene_combo.blockSignals(True)
+        try:
+            self.gene_combo.clear()
+            self.gene_tree.clear()
+            self._gene_display_to_id = {}
+
+            if self.graph is None:
+                self.gene_summary_label.setText("No graph loaded")
+                return
+
+            if not selected_tables:
+                self.gene_summary_label.setText("No tables selected in Overview")
+                return
+
+            scoped_rows: Set[str] = set()
+            for table_id in selected_tables:
+                scoped_rows.update(self._table_to_rows.get(table_id, set()))
+
+            scoped_genes: List[str] = []
+            for gene_id, row_ids in self._gene_to_rows.items():
+                if row_ids.intersection(scoped_rows):
+                    scoped_genes.append(gene_id)
+
+            scoped_genes.sort(key=self.graph_service.gene_sort_key)
+            for gene_id in scoped_genes:
+                label = self.graph_service.format_gene_display(gene_id)
+                self.gene_combo.addItem(label, gene_id)
+                self._gene_display_to_id[label] = gene_id
+
+            if current_gene_id and current_gene_id in scoped_genes:
+                for idx in range(self.gene_combo.count()):
+                    item_gene_id = self.gene_combo.itemData(idx)
+                    if isinstance(item_gene_id, str) and item_gene_id == current_gene_id:
+                        self.gene_combo.setCurrentIndex(idx)
+                        break
+            elif scoped_genes:
+                self.gene_combo.setCurrentIndex(0)
+
+            self.gene_summary_label.setText(f"Genes in current scope: {len(scoped_genes)}")
+        finally:
+            self.gene_combo.blockSignals(False)
+
+    def on_gene_find_clicked(self) -> None:
+        gene_id = self._resolve_selected_gene_id()
+        if not gene_id:
+            self.gene_summary_label.setText("Enter or select a gene first")
+            return
+        self._populate_gene_provenance_tree(gene_id)
+
+    def _resolve_selected_gene_id(self) -> str:
+        current_text = self.gene_combo.currentText().strip()
+        if not current_text:
+            return ""
+
+        current_idx = self.gene_combo.currentIndex()
+        if current_idx >= 0 and current_text == self.gene_combo.itemText(current_idx):
+            item_gene_id = self.gene_combo.itemData(current_idx)
+            if isinstance(item_gene_id, str) and item_gene_id:
+                return item_gene_id
+
+        mapped_gene_id = self._gene_display_to_id.get(current_text)
+        if mapped_gene_id:
+            return mapped_gene_id
+
+        if current_text.upper().startswith("HGNC:"):
+            wanted_hgnc_id = current_text.upper()
+            for gene_id in self._gene_to_rows:
+                if self.graph_service.extract_hgnc_id(gene_id) == wanted_hgnc_id:
+                    return gene_id
+
+        return current_text
+
+    def _populate_gene_provenance_tree(self, gene_id: str) -> None:
+        self.gene_tree.clear()
+
+        selected_tables = self._selected_table_ids()
+        if not selected_tables:
+            self.gene_summary_label.setText("No tables selected in Overview")
+            return
+
+        row_ids = self._gene_to_rows.get(gene_id, set())
+        if not row_ids:
+            self.gene_summary_label.setText("Gene not found in current graph")
+            return
+
+        grouped: Dict[str, Dict[str, List[str]]] = {}
+        scoped_row_count = 0
+
+        for row_id in sorted(row_ids):
+            table_id = self._row_to_table.get(row_id, "")
+            if not table_id or table_id not in selected_tables:
+                continue
+
+            publication_id = self._scope_table_publication.get(table_id, "")
+            grouped.setdefault(publication_id, {}).setdefault(table_id, []).append(row_id)
+            scoped_row_count += 1
+
+        if not grouped:
+            self.gene_summary_label.setText("Gene not present in currently selected Overview scope")
+            return
+
+        for publication_id in sorted(grouped.keys()):
+            pub_rows = sum(len(rows) for rows in grouped[publication_id].values())
+            publication_label = self.graph_service.display_value_with_uuid_context(
+                publication_id,
+                input_dir=self.input_dir,
+                graph_path=self.current_graph_path,
+                resolve_row_context=True,
+            )
+            pub_item = QTreeWidgetItem([publication_label, str(pub_rows), "", ""])
+            pub_item.setData(0, OVERVIEW_KIND_ROLE, "gene_publication")
+            pub_item.setData(0, OVERVIEW_ID_ROLE, publication_id)
+
+            for table_id in sorted(grouped[publication_id].keys()):
+                table_rows = grouped[publication_id][table_id]
+                table_label = self.graph_service.display_value_with_uuid_context(
+                    table_id,
+                    input_dir=self.input_dir,
+                    graph_path=self.current_graph_path,
+                    resolve_row_context=True,
+                )
+                table_item = QTreeWidgetItem([table_label, str(len(table_rows)), "", ""])
+                table_item.setData(0, OVERVIEW_KIND_ROLE, "gene_table")
+                table_item.setData(0, OVERVIEW_ID_ROLE, table_id)
+
+                for row_id in table_rows:
+                    row_label = self.graph_service.display_value_with_uuid_context(
+                        row_id,
+                        input_dir=self.input_dir,
+                        graph_path=self.current_graph_path,
+                        resolve_row_context=True,
+                    )
+                    row_logfc = self._row_logfc.get(row_id, "")
+                    row_pvalue = self._row_pvalue.get(row_id, "")
+                    row_item = QTreeWidgetItem([row_label, "1", row_logfc, row_pvalue])
+                    row_item.setData(0, OVERVIEW_KIND_ROLE, "gene_row")
+                    row_item.setData(0, OVERVIEW_ID_ROLE, row_id)
+                    table_item.addChild(row_item)
+
+                pub_item.addChild(table_item)
+
+            self.gene_tree.addTopLevelItem(pub_item)
+
+        self.gene_tree.expandToDepth(1)
+        self.gene_tree.resizeColumnToContents(0)
+        self.gene_tree.resizeColumnToContents(1)
+        self.gene_tree.resizeColumnToContents(2)
+        self.gene_tree.resizeColumnToContents(3)
+
+        table_count = sum(len(tables) for tables in grouped.values())
+        publication_count = len(grouped)
+        self.gene_summary_label.setText(
+            f"Gene provenance for {gene_id}: {publication_count} publications | "
+            f"{table_count} tables | {scoped_row_count} rows"
+        )
+
+    def on_gene_tree_item_double_clicked(self, item: QTreeWidgetItem, column: int) -> None:
+        del column
+
+        kind = item.data(0, OVERVIEW_KIND_ROLE)
+        identifier = str(item.data(0, OVERVIEW_ID_ROLE) or "")
+        if not identifier:
+            return
+
+        if kind == "gene_row":
+            self._selection_sync_active = True
+            try:
+                self._network_focus_identifiers = [identifier]
+                self._set_triples_page_for_identifiers([identifier])
+                self._render_current_triples_table()
+                self.tabs.setCurrentWidget(self.triples_tab)
+                self._select_triple_rows_for_identifiers([identifier])
+            finally:
+                self._selection_sync_active = False
+            return
+
+        if kind == "gene_table":
+            self._focus_table_lineage(identifier)
 
     def _selected_table_ids(self) -> Set[str]:
         selected: Set[str] = set()
@@ -1550,6 +1832,33 @@ class KGExplorerWindow(QMainWindow):
     def _is_has_output_predicate(predicate: str) -> bool:
         p = predicate.strip().lower()
         return "has_output" in p or p.endswith("/hasoutput") or p.endswith("#hasoutput")
+
+    @staticmethod
+    def _is_gene_predicate(predicate: str) -> bool:
+        p = predicate.strip().lower()
+        return "biolink/vocab/gene" in p or p.endswith("/gene") or p.endswith("#gene")
+
+    @staticmethod
+    def _is_logfc_predicate(predicate: str) -> bool:
+        p = predicate.strip().lower()
+        return "data_3754" in p or p.endswith("/logfc") or p.endswith("#logfc")
+
+    @staticmethod
+    def _is_pvalue_predicate(predicate: str) -> bool:
+        p = predicate.strip().lower()
+        return "data_1669" in p or "pvalue" in p or p.endswith("/p-value") or p.endswith("#p-value")
+
+    @staticmethod
+    def _format_metric_value(value: str) -> str:
+        text = str(value).strip()
+        if not text:
+            return ""
+
+        if "^^" in text:
+            text = text.split("^^", 1)[0].strip()
+        if text.startswith('"') and text.endswith('"') and len(text) >= 2:
+            text = text[1:-1]
+        return text
 
     @staticmethod
     def _is_publication_node(value: str) -> bool:
