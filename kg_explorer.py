@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import html
 import itertools
 import json
@@ -244,6 +245,30 @@ class NetworkNodeItem(QGraphicsEllipseItem):
         return super().itemChange(change, value)
 
 
+class SortableGeneRankedTableItem(QTableWidgetItem):
+    """QTableWidget item with numeric-aware sorting for ranked gene metrics."""
+
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        self_value = self.data(ITEM_USER_ROLE)
+        other_value = other.data(ITEM_USER_ROLE)
+
+        self_num = self._coerce_numeric(self_value)
+        other_num = self._coerce_numeric(other_value)
+        if self_num is not None and other_num is not None:
+            return self_num < other_num
+
+        return self.text().lower() < other.text().lower()
+
+    @staticmethod
+    def _coerce_numeric(value: Any) -> Optional[float]:
+        if isinstance(value, (int, float)):
+            return float(value)
+        try:
+            return float(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+
+
 class KGExplorerWindow(QMainWindow):
     query_result_signal = pyqtSignal(object, object, str)
     graph_load_progress_signal = pyqtSignal(str)
@@ -275,6 +300,9 @@ class KGExplorerWindow(QMainWindow):
         self.available_graph_files: List[str] = []
         self.all_triples: List[Tuple[str, str, str]] = []
         self.filtered_triples: List[Tuple[str, str, str]] = []
+        self._selected_triples: List[Tuple[str, str, str]] = []
+        self._selected_triple_keys: Set[Tuple[str, str, str]] = set()
+        self._selected_triple_meta: Dict[Tuple[str, str, str], Tuple[str, str]] = {}
         self.current_query_result = QueryResultTable(headers=[], rows=[])
         self.binning_metadata: Dict[str, Any] = {}
         self._network_node_lookup: Dict[str, NetworkNode] = {}
@@ -366,7 +394,7 @@ class KGExplorerWindow(QMainWindow):
         self.graph_combo.setMaximumWidth(560)
         top_bar.addWidget(self.graph_combo, 1)
 
-        self.load_selected_button = QPushButton("Load Selected")
+        self.load_selected_button = QPushButton("Load")
         self.load_selected_button.clicked.connect(self.on_load_selected_graph_clicked)
         top_bar.addWidget(self.load_selected_button)
 
@@ -374,7 +402,7 @@ class KGExplorerWindow(QMainWindow):
         self.refresh_graphs_button.clicked.connect(self.on_refresh_graphs_clicked)
         top_bar.addWidget(self.refresh_graphs_button)
 
-        self.load_button = QPushButton("Load Graph (.nt)")
+        self.load_button = QPushButton("Load from File ...")
         self.load_button.clicked.connect(self.on_load_graph_clicked)
         top_bar.addWidget(self.load_button)
         top_bar.addStretch(1)
@@ -457,6 +485,11 @@ class KGExplorerWindow(QMainWindow):
         self.gene_refresh_button.setEnabled(False)
         gene_controls.addWidget(self.gene_refresh_button)
 
+        self.gene_send_to_curated_button = QPushButton("Send provenance to Curated")
+        self.gene_send_to_curated_button.clicked.connect(self.on_send_gene_provenance_to_selection_clicked)
+        self.gene_send_to_curated_button.setEnabled(False)
+        gene_controls.addWidget(self.gene_send_to_curated_button)
+
         gene_layout.addLayout(gene_controls)
         gene_filter_row = QHBoxLayout()
         gene_filter_row.addWidget(QLabel("Min publications"))
@@ -502,6 +535,8 @@ class KGExplorerWindow(QMainWindow):
         self.gene_ranked_table.setHorizontalHeaderLabels(["Gene", "Publications", "Tables", "Rows"])
         self.gene_ranked_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.gene_ranked_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.gene_ranked_table.horizontalHeader().setSortIndicator(1, Qt.DescendingOrder)
+        self.gene_ranked_table.setSortingEnabled(True)
         self.gene_ranked_table.itemSelectionChanged.connect(self.on_gene_ranked_selection_changed)
         self.gene_ranked_table.itemDoubleClicked.connect(self.on_gene_ranked_item_double_clicked)
 
@@ -521,8 +556,6 @@ class KGExplorerWindow(QMainWindow):
         self.gene_summary_label = QLabel("No graph loaded")
         self.gene_summary_label.setWordWrap(True)
         gene_layout.addWidget(self.gene_summary_label)
-
-        self.tabs.addTab(gene_tab, "Gene")
 
         triples_tab = QWidget()
         self.triples_tab = triples_tab
@@ -593,6 +626,10 @@ class KGExplorerWindow(QMainWindow):
         self.triples_count_label = QLabel("Triples: 0")
         triples_nav.addWidget(self.triples_count_label, 1)
 
+        self.triples_send_to_selection_button = QPushButton("Send selected to Curated")
+        self.triples_send_to_selection_button.clicked.connect(self.on_send_triples_to_selection_clicked)
+        triples_nav.addWidget(self.triples_send_to_selection_button)
+
         self.triples_first_button = QPushButton("First")
         self.triples_first_button.setEnabled(False)
         self.triples_first_button.clicked.connect(self.on_triples_first_page)
@@ -625,7 +662,8 @@ class KGExplorerWindow(QMainWindow):
         self.triples_table.itemSelectionChanged.connect(self.on_triples_selection_changed)
         triples_layout.addWidget(self.triples_table, 1)
 
-        self.tabs.addTab(triples_tab, "Triples")
+        self.tabs.addTab(triples_tab, "All Triples")
+        self.tabs.addTab(gene_tab, "Gene Filter")
 
         query_tab = QWidget()
         self.query_tab = query_tab
@@ -680,7 +718,37 @@ class KGExplorerWindow(QMainWindow):
 
         query_outer.addWidget(query_right_panel, 1)
 
-        self.tabs.addTab(query_tab, "Queries")
+        self.tabs.addTab(query_tab, "SparQL Filter")
+
+        selection_tab = QWidget()
+        self.selection_tab = selection_tab
+        selection_layout = QVBoxLayout(selection_tab)
+
+        selection_actions = QHBoxLayout()
+        self.selection_add_from_triples_button = QPushButton("Add selected from All Triples")
+        self.selection_add_from_triples_button.clicked.connect(self.on_send_triples_to_selection_clicked)
+        selection_actions.addWidget(self.selection_add_from_triples_button)
+
+        self.selection_remove_button = QPushButton("Remove selected")
+        self.selection_remove_button.clicked.connect(self.on_selection_remove_selected_clicked)
+        selection_actions.addWidget(self.selection_remove_button)
+
+        self.selection_clear_button = QPushButton("Clear all")
+        self.selection_clear_button.clicked.connect(self.on_selection_clear_all_clicked)
+        selection_actions.addWidget(self.selection_clear_button)
+        selection_actions.addStretch(1)
+
+        self.selection_count_label = QLabel("Curated triples: 0")
+        selection_actions.addWidget(self.selection_count_label)
+        selection_layout.addLayout(selection_actions)
+
+        self.selection_table = QTableWidget(0, 5)
+        self.selection_table.setHorizontalHeaderLabels(["Subject", "Predicate", "Object", "Source", "Added"])
+        self.selection_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.selection_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        selection_layout.addWidget(self.selection_table, 1)
+
+        self.tabs.addTab(selection_tab, "Curated")
         self.tabs.setCurrentIndex(0)
 
         return panel
@@ -704,31 +772,36 @@ class KGExplorerWindow(QMainWindow):
         network_layout = QVBoxLayout(network_panel)
         network_layout.setContentsMargins(0, 0, 0, 0)
 
-        network_controls = QHBoxLayout()
-        network_controls.addWidget(QLabel("Max edges:"))
+        network_controls_top = QHBoxLayout()
+        network_controls_top.addWidget(QLabel("Max edges:"))
         self.network_edge_limit = QSpinBox()
         self.network_edge_limit.setRange(10, 5000)
         self.network_edge_limit.setValue(DEFAULT_NETWORK_MAX_EDGES)
         self.network_edge_limit.valueChanged.connect(self.refresh_network_view)
-        network_controls.addWidget(self.network_edge_limit)
+        network_controls_top.addWidget(self.network_edge_limit)
 
         self.network_summary_label = QLabel("Nodes: 0 | Edges: 0")
         self.network_summary_label.setWordWrap(True)
-        network_controls.addWidget(self.network_summary_label, 1)
+        network_controls_top.addWidget(self.network_summary_label, 1)
 
         clear_network_selection_button = QPushButton("Clear selection")
         clear_network_selection_button.clicked.connect(self.on_clear_network_selection_clicked)
-        network_controls.addWidget(clear_network_selection_button)
+        network_controls_top.addWidget(clear_network_selection_button)
 
         fit_button = QPushButton("Fit")
         fit_button.clicked.connect(self.fit_network_view)
-        network_controls.addWidget(fit_button)
+        network_controls_top.addWidget(fit_button)
 
-        network_controls.addWidget(QLabel("View:"))
+        network_layout.addLayout(network_controls_top)
+
+        network_controls_modes = QHBoxLayout()
+
+        network_controls_modes.addWidget(QLabel("View:"))
         self.network_detail_mode = QComboBox()
         self.network_detail_mode.addItem("Overview", "overview")
         self.network_detail_mode.addItem("Tables + rows", "tables")
         self.network_detail_mode.addItem("Full", "full")
+        self.network_detail_mode.setMinimumWidth(150)
         self.network_detail_mode.setCurrentIndex(0)
         self.network_detail_mode.setToolTip(
             "Overview: publications and table roots only.\n"
@@ -736,9 +809,36 @@ class KGExplorerWindow(QMainWindow):
             "Full: show all nodes."
         )
         self.network_detail_mode.currentIndexChanged.connect(self.refresh_network_view)
-        network_controls.addWidget(self.network_detail_mode)
+        network_controls_modes.addWidget(self.network_detail_mode)
 
-        network_layout.addLayout(network_controls)
+        network_controls_modes.addWidget(QLabel("Layout:"))
+        self.network_layout_mode = QComboBox()
+        self.network_layout_mode.addItem("Clustered", "clustered")
+        self.network_layout_mode.addItem("Sunflower (classic)", "sunflower")
+        self.network_layout_mode.setMinimumWidth(190)
+        self.network_layout_mode.setCurrentIndex(0)
+        self.network_layout_mode.setToolTip(
+            "Clustered: group table lineages and keep rows near table roots.\n"
+            "Sunflower (classic): previous uniform radial arrangement."
+        )
+        self.network_layout_mode.currentIndexChanged.connect(self.refresh_network_view)
+        network_controls_modes.addWidget(self.network_layout_mode)
+
+        network_controls_modes.addWidget(QLabel("Source:"))
+        self.network_source_mode = QComboBox()
+        self.network_source_mode.addItem("All Triples", "all")
+        self.network_source_mode.addItem("Curated Triples", "selected")
+        self.network_source_mode.setMinimumWidth(170)
+        self.network_source_mode.setCurrentIndex(0)
+        self.network_source_mode.setToolTip(
+            "All Triples: uses current Overview + Triple filters.\n"
+            "Curated Triples: uses only curated triples from the Curated tab."
+        )
+        self.network_source_mode.currentIndexChanged.connect(self.refresh_network_view)
+        network_controls_modes.addWidget(self.network_source_mode)
+        network_controls_modes.addStretch(1)
+
+        network_layout.addLayout(network_controls_modes)
 
         self.network_legend_text = QTextBrowser()
         self.network_legend_text.setReadOnly(True)
@@ -769,7 +869,7 @@ class KGExplorerWindow(QMainWindow):
         right_splitter.addWidget(network_panel)
         right_splitter.setStretchFactor(0, 1)
         right_splitter.setStretchFactor(1, 4)
-        right_splitter.setSizes([220, 640])
+        right_splitter.setSizes([170, 690])
 
         layout.addWidget(right_splitter, 1)
         return panel
@@ -955,6 +1055,7 @@ class KGExplorerWindow(QMainWindow):
         self.export_button.setEnabled(not is_loading)
         self.gene_find_button.setEnabled((not is_loading) and self.graph is not None)
         self.gene_refresh_button.setEnabled((not is_loading) and self.graph is not None)
+        self.gene_send_to_curated_button.setEnabled((not is_loading) and self.graph is not None)
         self.gene_ranked_table.setEnabled((not is_loading) and self.graph is not None)
 
     def _load_binning_metadata(self, graph_path: str) -> None:
@@ -1372,22 +1473,38 @@ class KGExplorerWindow(QMainWindow):
             key=lambda item: (-item[1], -item[2], -item[3], self.graph_service.gene_sort_key(item[0]))
         )
 
+        header = self.gene_ranked_table.horizontalHeader()
+        sort_column = header.sortIndicatorSection()
+        sort_order = header.sortIndicatorOrder()
+
+        self.gene_ranked_table.setSortingEnabled(False)
         self.gene_ranked_table.blockSignals(True)
         try:
             self.gene_ranked_table.setRowCount(len(rows))
             for row_idx, (gene_id, pub_count, table_count, row_count) in enumerate(rows):
                 gene_label = self.graph_service.format_gene_display(gene_id)
-                gene_item = self._make_table_item(gene_label, raw_value=gene_id, display_override=gene_label)
+                gene_item = SortableGeneRankedTableItem(gene_label)
+                gene_item.setData(ITEM_USER_ROLE, gene_id)
                 self.gene_ranked_table.setItem(row_idx, 0, gene_item)
-                self.gene_ranked_table.setItem(row_idx, 1, self._make_table_item(str(pub_count), raw_value=str(pub_count)))
-                self.gene_ranked_table.setItem(row_idx, 2, self._make_table_item(str(table_count), raw_value=str(table_count)))
-                self.gene_ranked_table.setItem(row_idx, 3, self._make_table_item(str(row_count), raw_value=str(row_count)))
+                pub_item = SortableGeneRankedTableItem(str(pub_count))
+                pub_item.setData(ITEM_USER_ROLE, pub_count)
+                self.gene_ranked_table.setItem(row_idx, 1, pub_item)
+                table_item = SortableGeneRankedTableItem(str(table_count))
+                table_item.setData(ITEM_USER_ROLE, table_count)
+                self.gene_ranked_table.setItem(row_idx, 2, table_item)
+                row_item = SortableGeneRankedTableItem(str(row_count))
+                row_item.setData(ITEM_USER_ROLE, row_count)
+                self.gene_ranked_table.setItem(row_idx, 3, row_item)
 
             if len(rows) <= 1000:
                 self.gene_ranked_table.resizeColumnsToContents()
             self.gene_ranked_table.setColumnWidth(0, max(self.gene_ranked_table.columnWidth(0), 420))
         finally:
             self.gene_ranked_table.blockSignals(False)
+            self.gene_ranked_table.setSortingEnabled(True)
+
+        if sort_column >= 0:
+            self.gene_ranked_table.sortItems(sort_column, sort_order)
 
         if selected_gene_id:
             self._select_gene_ranked_row(selected_gene_id)
@@ -1979,6 +2096,8 @@ class KGExplorerWindow(QMainWindow):
     def refresh_network_view(self) -> None:
         selected_identifiers = self._selected_network_identifiers()
         fallback_identifiers = self._current_triple_node_identifiers()
+        network_triples = self._network_triples_for_view()
+        source_label = "selected" if self._network_source_mode_value() == "selected" else "all"
 
         self.network_scene.blockSignals(True)
         try:
@@ -1994,8 +2113,8 @@ class KGExplorerWindow(QMainWindow):
             self._network_table_children = {}
             self._network_legend_table_links = {}
 
-            if not self.filtered_triples:
-                self.network_summary_label.setText("Nodes: 0 | Edges: 0")
+            if not network_triples:
+                self.network_summary_label.setText(f"Nodes: 0 | Edges: 0 ({source_label})")
                 self._set_html_text(self.network_legend_text, "<b>Table legend:</b><br>None")
                 return
 
@@ -2008,7 +2127,7 @@ class KGExplorerWindow(QMainWindow):
                 )
 
             model = self.graph_service.build_network_model(
-                self._iter_prioritized_triples(self.filtered_triples),
+                self._iter_prioritized_triples(network_triples),
                 max_edges=int(self.network_edge_limit.value()),
                 label_resolver=network_label,
             )
@@ -2023,7 +2142,13 @@ class KGExplorerWindow(QMainWindow):
             ) = self._compute_table_lineage_colors(model)
 
             self._network_node_lookup = {node.identifier: node for node in model.nodes}
-            positions = self._compute_network_positions(model.nodes)
+            positions = self._compute_network_positions(
+                model.nodes,
+                model.edges,
+                self._network_table_lineages,
+                self._network_table_publications,
+                self._network_layout_mode_value(),
+            )
 
             detail_mode = self._network_detail_mode_value()
             visible_ids = self._visible_network_identifiers(model.nodes, detail_mode)
@@ -2072,7 +2197,7 @@ class KGExplorerWindow(QMainWindow):
             self._network_node_items = node_items
             detail_note = f" ({detail_mode})"
             self.network_summary_label.setText(
-                f"Nodes: {len(node_items)} | Edges: {len(self._network_edge_items)}{detail_note}"
+                f"Nodes: {len(node_items)} | Edges: {len(self._network_edge_items)}{detail_note}, {source_label}"
             )
             self._render_network_legend(network_label)
         finally:
@@ -2297,6 +2422,17 @@ class KGExplorerWindow(QMainWindow):
 
     def _network_detail_mode_value(self) -> str:
         return str(self.network_detail_mode.currentData() or "overview")
+
+    def _network_source_mode_value(self) -> str:
+        return str(self.network_source_mode.currentData() or "all")
+
+    def _network_layout_mode_value(self) -> str:
+        return str(self.network_layout_mode.currentData() or "clustered")
+
+    def _network_triples_for_view(self) -> List[Tuple[str, str, str]]:
+        if self._network_source_mode_value() == "selected":
+            return list(self._selected_triples)
+        return self.filtered_triples
 
     def _visible_network_identifiers(self, nodes: List[NetworkNode], detail_mode: str) -> Set[str]:
         if detail_mode == "full":
@@ -2556,21 +2692,122 @@ class KGExplorerWindow(QMainWindow):
         self.network_view.fitInView(rect.adjusted(-20, -20, 20, 20), Qt.KeepAspectRatio)
 
     @staticmethod
-    def _compute_network_positions(nodes: List[NetworkNode]) -> Dict[str, QPointF]:
+    def _compute_network_positions(
+        nodes: List[NetworkNode],
+        edges: Optional[List[Any]] = None,
+        table_lineages: Optional[Dict[str, Set[str]]] = None,
+        table_publications: Optional[Dict[str, str]] = None,
+        layout_mode: str = "clustered",
+    ) -> Dict[str, QPointF]:
         positions: Dict[str, QPointF] = {}
         n = len(nodes)
         if not n:
             return positions
 
-        # Sunflower / Fibonacci spiral: evenly fills a disc with ~uniform spacing.
-        # golden_angle ≈ 137.5° ensures no two spokes align.
-        golden_angle = math.pi * (3.0 - math.sqrt(5.0))
-        scale = 95.0 * math.sqrt(n)
+        if layout_mode == "sunflower":
+            golden_angle = math.pi * (3.0 - math.sqrt(5.0))
+            scale = 95.0 * math.sqrt(n)
+            for index, node in enumerate(nodes):
+                r = scale * math.sqrt((index + 0.5) / n)
+                theta = index * golden_angle
+                positions[node.identifier] = QPointF(r * math.cos(theta), r * math.sin(theta))
+            return positions
 
-        for index, node in enumerate(nodes):
-            r = scale * math.sqrt((index + 0.5) / n)
-            theta = index * golden_angle
-            positions[node.identifier] = QPointF(r * math.cos(theta), r * math.sin(theta))
+        if not edges or not table_lineages:
+            # Fallback: generic sunflower layout.
+            golden_angle = math.pi * (3.0 - math.sqrt(5.0))
+            scale = 95.0 * math.sqrt(n)
+            for index, node in enumerate(nodes):
+                r = scale * math.sqrt((index + 0.5) / n)
+                theta = index * golden_angle
+                positions[node.identifier] = QPointF(r * math.cos(theta), r * math.sin(theta))
+            return positions
+
+        node_ids = [node.identifier for node in nodes]
+        node_id_set = set(node_ids)
+
+        table_roots = [table_id for table_id in sorted(table_lineages.keys()) if table_id in node_id_set]
+        if not table_roots:
+            golden_angle = math.pi * (3.0 - math.sqrt(5.0))
+            scale = 95.0 * math.sqrt(n)
+            for index, node in enumerate(nodes):
+                r = scale * math.sqrt((index + 0.5) / n)
+                theta = index * golden_angle
+                positions[node.identifier] = QPointF(r * math.cos(theta), r * math.sin(theta))
+            return positions
+
+        node_to_tables: Dict[str, Set[str]] = {}
+        for table_id, lineage in table_lineages.items():
+            if table_id not in node_id_set:
+                continue
+            for identifier in lineage:
+                if identifier in node_id_set:
+                    node_to_tables.setdefault(identifier, set()).add(table_id)
+
+        table_count = len(table_roots)
+        ring_radius = max(240.0, 185.0 * math.sqrt(table_count))
+        table_centers: Dict[str, QPointF] = {}
+        for index, table_id in enumerate(table_roots):
+            theta = (2.0 * math.pi * index) / max(1, table_count)
+            table_centers[table_id] = QPointF(ring_radius * math.cos(theta), ring_radius * math.sin(theta))
+            positions[table_id] = table_centers[table_id]
+
+        if table_publications:
+            for table_id in table_roots:
+                publication_id = table_publications.get(table_id, "")
+                if not publication_id or publication_id not in node_id_set:
+                    continue
+                if publication_id in positions:
+                    continue
+                center = table_centers[table_id]
+                angle = math.atan2(center.y(), center.x())
+                positions[publication_id] = QPointF(
+                    center.x() + 92.0 * math.cos(angle),
+                    center.y() + 92.0 * math.sin(angle),
+                )
+
+        shared_nodes = [
+            identifier
+            for identifier in node_ids
+            if len(node_to_tables.get(identifier, set())) > 1 and identifier not in positions
+        ]
+        if shared_nodes:
+            shared_radius = 36.0 + 9.0 * math.sqrt(len(shared_nodes))
+            for idx, identifier in enumerate(sorted(shared_nodes)):
+                theta = (2.0 * math.pi * idx) / max(1, len(shared_nodes))
+                positions[identifier] = QPointF(shared_radius * math.cos(theta), shared_radius * math.sin(theta))
+
+        for table_id in table_roots:
+            center = table_centers[table_id]
+            lineage = table_lineages.get(table_id, set())
+            exclusive_nodes = [
+                identifier
+                for identifier in lineage
+                if identifier in node_id_set
+                and identifier not in positions
+                and node_to_tables.get(identifier) == {table_id}
+            ]
+            if not exclusive_nodes:
+                continue
+
+            local_radius = 86.0 + 16.0 * math.sqrt(len(exclusive_nodes))
+            for idx, identifier in enumerate(sorted(exclusive_nodes)):
+                theta = (2.0 * math.pi * idx) / max(1, len(exclusive_nodes))
+                r = local_radius * math.sqrt((idx + 0.5) / len(exclusive_nodes))
+                positions[identifier] = QPointF(
+                    center.x() + r * math.cos(theta),
+                    center.y() + r * math.sin(theta),
+                )
+
+        remaining = [identifier for identifier in node_ids if identifier not in positions]
+        if remaining:
+            golden_angle = math.pi * (3.0 - math.sqrt(5.0))
+            outer_radius = ring_radius + 160.0
+            for idx, identifier in enumerate(remaining):
+                r = outer_radius + 18.0 * math.sqrt(idx + 1)
+                theta = idx * golden_angle
+                positions[identifier] = QPointF(r * math.cos(theta), r * math.sin(theta))
+
         return positions
 
     @staticmethod
@@ -2727,6 +2964,235 @@ class KGExplorerWindow(QMainWindow):
             self._apply_network_edge_highlight(set(selected_edge_keys), selected_node_identifiers)
         finally:
             self._selection_sync_active = False
+
+    def on_send_triples_to_selection_clicked(self) -> None:
+        triples = self._selected_triple_edge_keys()
+        if not triples:
+            QMessageBox.information(self, "No Triple Selection", "Select one or more triples first.")
+            return
+
+        added = self._add_triples_to_selection(triples, source="Triples")
+        if added == 0:
+            QMessageBox.information(self, "Curated Unchanged", "All selected triples are already in Curated.")
+            return
+
+        status_bar = self.statusBar()
+        if status_bar is not None:
+            status_bar.showMessage(f"Added {added} triples to Curated")
+        if self._network_source_mode_value() == "selected":
+            self.refresh_network_view()
+
+    def on_send_gene_provenance_to_selection_clicked(self) -> None:
+        selected_tables = self._selected_table_ids()
+        if not selected_tables:
+            QMessageBox.information(self, "No Scope Selected", "Select at least one table in Overview first.")
+            return
+
+        publication_ids: Set[str] = set()
+        table_ids: Set[str] = set()
+        row_ids: Set[str] = set()
+        gene_ids: Set[str] = set()
+
+        selected_items = self.gene_tree.selectedItems()
+        if selected_items:
+            for item in selected_items:
+                self._collect_gene_tree_targets(item, publication_ids, table_ids, row_ids)
+            resolved_gene_id = self._resolve_selected_gene_id()
+            if resolved_gene_id:
+                gene_ids.add(resolved_gene_id)
+        else:
+            gene_id = self._resolve_selected_gene_id()
+            if not gene_id:
+                QMessageBox.information(self, "No Gene", "Select a gene or provenance rows first.")
+                return
+
+            gene_ids.add(gene_id)
+            row_ids.update(self._gene_filtered_rows.get(gene_id, []))
+            if not row_ids:
+                row_ids.update(self._rows_for_gene_with_active_filters(gene_id, selected_tables))
+
+            for row_id in row_ids:
+                table_id = self._row_to_table.get(row_id, "")
+                if not table_id:
+                    continue
+                table_ids.add(table_id)
+                publication_id = self._scope_table_publication.get(table_id, "")
+                if publication_id:
+                    publication_ids.add(publication_id)
+
+        if not (publication_ids or table_ids or row_ids):
+            QMessageBox.information(self, "No Provenance", "No provenance identifiers found to curate.")
+            return
+
+        scope_triples = self._apply_scope_selection(self.all_triples)
+        triples: List[Tuple[str, str, str]] = []
+        for subj, pred, obj in scope_triples:
+            # Publication -> table edges represented by top-level hierarchy links.
+            if subj in publication_ids and obj in table_ids and self._is_has_output_predicate(pred):
+                triples.append((subj, pred, obj))
+                continue
+
+            # Table -> row edges represented by table children in the hierarchy.
+            if subj in table_ids and obj in row_ids and self._is_has_output_predicate(pred):
+                triples.append((subj, pred, obj))
+                continue
+
+            # Row attribute triples represented by row leaves (gene/logFC/p-value).
+            if subj in row_ids and (
+                obj in gene_ids
+                or self._is_gene_predicate(pred)
+                or self._is_logfc_predicate(pred)
+                or self._is_pvalue_predicate(pred)
+            ):
+                triples.append((subj, pred, obj))
+
+        if not triples:
+            QMessageBox.information(self, "No Triples", "No triples found for the selected provenance context.")
+            return
+
+        added = self._add_triples_to_selection(triples, source="Gene Filter")
+        if added == 0:
+            QMessageBox.information(self, "Curated Unchanged", "All provenance triples are already in Curated.")
+            return
+
+        status_bar = self.statusBar()
+        if status_bar is not None:
+            status_bar.showMessage(f"Added {added} provenance triples to Curated")
+        if self._network_source_mode_value() == "selected":
+            self.refresh_network_view()
+
+    def _collect_gene_tree_targets(
+        self,
+        item: QTreeWidgetItem,
+        publication_ids: Set[str],
+        table_ids: Set[str],
+        row_ids: Set[str],
+    ) -> None:
+        kind = str(item.data(0, OVERVIEW_KIND_ROLE) or "")
+        identifier = str(item.data(0, OVERVIEW_ID_ROLE) or "")
+        if identifier:
+            if kind == "gene_publication":
+                publication_ids.add(identifier)
+            elif kind == "gene_table":
+                table_ids.add(identifier)
+            elif kind == "gene_row":
+                row_ids.add(identifier)
+
+        for child_idx in range(item.childCount()):
+            child_item = item.child(child_idx)
+            if child_item is not None:
+                self._collect_gene_tree_targets(child_item, publication_ids, table_ids, row_ids)
+
+    def on_selection_remove_selected_clicked(self) -> None:
+        rows = self._selected_selection_rows()
+        if not rows:
+            return
+
+        for row in sorted(rows, reverse=True):
+            triple = self._selected_triples[row]
+            self._selected_triple_keys.discard(triple)
+            self._selected_triple_meta.pop(triple, None)
+            del self._selected_triples[row]
+
+        self._render_selection_table()
+        if self._network_source_mode_value() == "selected":
+            self.refresh_network_view()
+
+    def on_selection_clear_all_clicked(self) -> None:
+        if not self._selected_triples:
+            return
+        self._selected_triples.clear()
+        self._selected_triple_keys.clear()
+        self._selected_triple_meta.clear()
+        self._render_selection_table()
+        if self._network_source_mode_value() == "selected":
+            self.refresh_network_view()
+
+    def _add_triples_to_selection(self, triples: Iterable[Tuple[str, str, str]], source: str) -> int:
+        added = 0
+        added_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for subj, pred, obj in triples:
+            triple = (str(subj), str(pred), str(obj))
+            if triple in self._selected_triple_keys:
+                continue
+            self._selected_triples.append(triple)
+            self._selected_triple_keys.add(triple)
+            self._selected_triple_meta[triple] = (source, added_at)
+            added += 1
+
+        if added:
+            self._render_selection_table()
+        return added
+
+    def _render_selection_table(self) -> None:
+        self.selection_table.blockSignals(True)
+        try:
+            self.selection_table.setRowCount(len(self._selected_triples))
+            for row_idx, (subj, pred, obj) in enumerate(self._selected_triples):
+                source, added_at = self._selected_triple_meta.get((subj, pred, obj), ("", ""))
+
+                self.selection_table.setItem(
+                    row_idx,
+                    0,
+                    self._make_table_item(
+                        subj,
+                        raw_value=subj,
+                        display_override=self.graph_service.display_value_with_uuid_context(
+                            subj,
+                            input_dir=self.input_dir,
+                            graph_path=self.current_graph_path,
+                            resolve_row_context=True,
+                        ),
+                    ),
+                )
+                self.selection_table.setItem(
+                    row_idx,
+                    1,
+                    self._make_table_item(
+                        pred,
+                        raw_value=pred,
+                        display_override=self.graph_service.display_value_with_uuid_context(
+                            pred,
+                            input_dir=self.input_dir,
+                            graph_path=self.current_graph_path,
+                            resolve_row_context=True,
+                        ),
+                    ),
+                )
+                self.selection_table.setItem(
+                    row_idx,
+                    2,
+                    self._make_table_item(
+                        obj,
+                        raw_value=obj,
+                        display_override=self.graph_service.display_value_with_uuid_context(
+                            obj,
+                            input_dir=self.input_dir,
+                            graph_path=self.current_graph_path,
+                            resolve_row_context=True,
+                        ),
+                    ),
+                )
+                self.selection_table.setItem(row_idx, 3, self._make_table_item(source, raw_value=source, display_override=source))
+                self.selection_table.setItem(row_idx, 4, self._make_table_item(added_at, raw_value=added_at, display_override=added_at))
+
+            if len(self._selected_triples) <= 1000:
+                self.selection_table.resizeColumnsToContents()
+            self.selection_table.setColumnWidth(0, max(self.selection_table.columnWidth(0), 360))
+            self.selection_table.setColumnWidth(2, max(self.selection_table.columnWidth(2), 360))
+        finally:
+            self.selection_table.blockSignals(False)
+
+        self.selection_count_label.setText(f"Curated triples: {len(self._selected_triples)}")
+
+    def _selected_selection_rows(self) -> List[int]:
+        selection_model = self.selection_table.selectionModel()
+        selected_rows = {index.row() for index in selection_model.selectedRows()} if selection_model else set()
+        if not selected_rows:
+            current_row = self.selection_table.currentRow()
+            if current_row >= 0:
+                selected_rows.add(current_row)
+        return sorted(selected_rows)
 
     def on_query_selection_changed(self) -> None:
         row = self.query_results_table.currentRow()
