@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from urllib.error import URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 import pandas as pd
 from akg import load_graph
@@ -50,6 +50,22 @@ class NetworkModel:
     nodes: List[NetworkNode]
     edges: List[NetworkEdge]
     total_edges: int
+
+
+@dataclass
+class ProvenanceIndex:
+    publication_tables: Dict[str, List[str]]
+    table_publication: Dict[str, str]
+    table_lineages: Dict[str, Set[str]]
+    table_row_counts: Dict[str, int]
+    gene_to_rows: Dict[str, Set[str]]
+    row_to_table: Dict[str, str]
+    table_to_rows: Dict[str, Set[str]]
+    row_logfc: Dict[str, str]
+    row_pvalue: Dict[str, str]
+    gene_publications: Dict[str, Set[str]]
+    gene_tables: Dict[str, Set[str]]
+    gene_row_counts: Dict[str, int]
 
 
 class GraphDataService:
@@ -256,6 +272,129 @@ class GraphDataService:
         resolved = self.display_value(text)
         self._uuid_context_display_cache[cache_key] = resolved
         return resolved
+
+    @staticmethod
+    def is_has_output_predicate(predicate: str) -> bool:
+        p = str(predicate).strip().lower()
+        return "has_output" in p or p.endswith("/hasoutput") or p.endswith("#hasoutput")
+
+    @staticmethod
+    def is_gene_predicate(predicate: str) -> bool:
+        p = str(predicate).strip().lower()
+        return "biolink/vocab/gene" in p or p.endswith("/gene") or p.endswith("#gene")
+
+    @staticmethod
+    def is_logfc_predicate(predicate: str) -> bool:
+        p = str(predicate).strip().lower()
+        return "data_3754" in p or p.endswith("/logfc") or p.endswith("#logfc")
+
+    @staticmethod
+    def is_pvalue_predicate(predicate: str) -> bool:
+        p = str(predicate).strip().lower()
+        return "data_1669" in p or "pvalue" in p or p.endswith("/p-value") or p.endswith("#p-value")
+
+    @staticmethod
+    def format_metric_value(value: str) -> str:
+        text = str(value).strip()
+        if not text:
+            return ""
+
+        if "^^" in text:
+            text = text.split("^^", 1)[0].strip()
+        if text.startswith('"') and text.endswith('"') and len(text) >= 2:
+            text = text[1:-1]
+        return text
+
+    @staticmethod
+    def is_publication_node(value: str) -> bool:
+        if MetadataService.normalize_pmid(value):
+            return True
+        lower = str(value).strip().lower()
+        return "pubmed.ncbi.nlm.nih.gov" in lower or "/pmid/" in lower
+
+    def build_provenance_index(self, triples: Iterable[Tuple[str, str, str]]) -> ProvenanceIndex:
+        publication_tables: Dict[str, List[str]] = {}
+        table_publication: Dict[str, str] = {}
+        outgoing: Dict[str, List[str]] = {}
+        gene_to_rows: Dict[str, Set[str]] = {}
+        row_to_table: Dict[str, str] = {}
+        table_to_rows: Dict[str, Set[str]] = {}
+        row_logfc: Dict[str, str] = {}
+        row_pvalue: Dict[str, str] = {}
+
+        for subj, pred, obj in triples:
+            outgoing.setdefault(subj, []).append(obj)
+            if self.is_gene_predicate(pred):
+                rows = gene_to_rows.setdefault(obj, set())
+                rows.add(subj)
+            elif self.is_logfc_predicate(pred):
+                row_logfc.setdefault(subj, self.format_metric_value(obj))
+            elif self.is_pvalue_predicate(pred):
+                row_pvalue.setdefault(subj, self.format_metric_value(obj))
+
+            if self.is_has_output_predicate(pred) and self.is_publication_node(subj):
+                tables = publication_tables.setdefault(subj, [])
+                if obj not in tables:
+                    tables.append(obj)
+                table_publication.setdefault(obj, subj)
+
+        table_lineages: Dict[str, Set[str]] = {}
+        table_row_counts: Dict[str, int] = {}
+        for tables in publication_tables.values():
+            for table_id in tables:
+                children = set(outgoing.get(table_id, []))
+                table_row_counts[table_id] = len(children)
+                table_to_rows[table_id] = children
+                for child_id in children:
+                    row_to_table.setdefault(child_id, table_id)
+
+                lineage: Set[str] = {table_id}
+                frontier = [table_id]
+                while frontier:
+                    current = frontier.pop()
+                    for nxt in outgoing.get(current, []):
+                        if nxt in lineage:
+                            continue
+                        lineage.add(nxt)
+                        frontier.append(nxt)
+                table_lineages[table_id] = lineage
+
+        for pub_id in publication_tables:
+            publication_tables[pub_id].sort()
+
+        gene_publications: Dict[str, Set[str]] = {}
+        gene_tables: Dict[str, Set[str]] = {}
+        gene_row_counts: Dict[str, int] = {}
+        for gene_id, row_ids in gene_to_rows.items():
+            tables_for_gene: Set[str] = set()
+            publications_for_gene: Set[str] = set()
+            for row_id in row_ids:
+                table_id = row_to_table.get(row_id, "")
+                if not table_id:
+                    continue
+                tables_for_gene.add(table_id)
+                publication_id = table_publication.get(table_id, "")
+                if publication_id:
+                    publications_for_gene.add(publication_id)
+
+            gene_tables[gene_id] = tables_for_gene
+            gene_publications[gene_id] = publications_for_gene
+            gene_row_counts[gene_id] = len(row_ids)
+
+        return ProvenanceIndex(
+            publication_tables=dict(sorted(publication_tables.items(), key=lambda kv: kv[0].lower())),
+            table_publication=table_publication,
+            table_lineages=table_lineages,
+            table_row_counts=table_row_counts,
+            gene_to_rows=gene_to_rows,
+            row_to_table=row_to_table,
+            table_to_rows=table_to_rows,
+            row_logfc=row_logfc,
+            row_pvalue=row_pvalue,
+            gene_publications=gene_publications,
+            gene_tables=gene_tables,
+            gene_row_counts=gene_row_counts,
+        )
 
     @staticmethod
     def supports_sparql(graph: Any) -> bool:

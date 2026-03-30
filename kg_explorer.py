@@ -280,6 +280,9 @@ class KGExplorerWindow(QMainWindow):
         self._table_to_rows: Dict[str, Set[str]] = {}
         self._row_logfc: Dict[str, str] = {}
         self._row_pvalue: Dict[str, str] = {}
+        self._gene_publications: Dict[str, Set[str]] = {}
+        self._gene_tables: Dict[str, Set[str]] = {}
+        self._gene_row_counts: Dict[str, int] = {}
         self._gene_display_to_id: Dict[str, str] = {}
         self._last_scope_rebuild_seconds = 0.0
         self._overview_tree_updating = False
@@ -432,6 +435,14 @@ class KGExplorerWindow(QMainWindow):
         gene_controls.addWidget(self.gene_refresh_button)
 
         gene_layout.addLayout(gene_controls)
+
+        self.gene_ranked_table = QTableWidget(0, 4)
+        self.gene_ranked_table.setHorizontalHeaderLabels(["Gene", "Publications", "Tables", "Rows"])
+        self.gene_ranked_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.gene_ranked_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.gene_ranked_table.itemSelectionChanged.connect(self.on_gene_ranked_selection_changed)
+        self.gene_ranked_table.itemDoubleClicked.connect(self.on_gene_ranked_item_double_clicked)
+        gene_layout.addWidget(self.gene_ranked_table)
 
         self.gene_tree = QTreeWidget()
         self.gene_tree.setHeaderLabels(["Publication / Table / Row", "Count", "LogFC", "p-value"])
@@ -875,6 +886,7 @@ class KGExplorerWindow(QMainWindow):
         self.export_button.setEnabled(not is_loading)
         self.gene_find_button.setEnabled((not is_loading) and self.graph is not None)
         self.gene_refresh_button.setEnabled((not is_loading) and self.graph is not None)
+        self.gene_ranked_table.setEnabled((not is_loading) and self.graph is not None)
 
     def _load_binning_metadata(self, graph_path: str) -> None:
         self.binning_metadata = self.graph_service.load_binning_metadata(graph_path)
@@ -968,63 +980,19 @@ class KGExplorerWindow(QMainWindow):
         self.predicate_filter.selectAll()
 
     def _rebuild_scope_hierarchy(self) -> None:
-        publication_tables: Dict[str, List[str]] = {}
-        table_publication: Dict[str, str] = {}
-        outgoing: Dict[str, List[str]] = {}
-        gene_to_rows: Dict[str, Set[str]] = {}
-        row_to_table: Dict[str, str] = {}
-        table_to_rows: Dict[str, Set[str]] = {}
-        row_logfc: Dict[str, str] = {}
-        row_pvalue: Dict[str, str] = {}
-
-        for subj, pred, obj in self.all_triples:
-            outgoing.setdefault(subj, []).append(obj)
-            if self._is_gene_predicate(pred):
-                rows = gene_to_rows.setdefault(obj, set())
-                rows.add(subj)
-            elif self._is_logfc_predicate(pred):
-                row_logfc.setdefault(subj, self._format_metric_value(obj))
-            elif self._is_pvalue_predicate(pred):
-                row_pvalue.setdefault(subj, self._format_metric_value(obj))
-            if self._is_has_output_predicate(pred) and self._is_publication_node(subj):
-                tables = publication_tables.setdefault(subj, [])
-                if obj not in tables:
-                    tables.append(obj)
-                table_publication.setdefault(obj, subj)
-
-        table_lineages: Dict[str, Set[str]] = {}
-        table_row_counts: Dict[str, int] = {}
-        for tables in publication_tables.values():
-            for table_id in tables:
-                children = set(outgoing.get(table_id, []))
-                table_row_counts[table_id] = len(children)
-                table_to_rows[table_id] = children
-                for child_id in children:
-                    row_to_table.setdefault(child_id, table_id)
-
-                lineage: Set[str] = {table_id}
-                frontier = [table_id]
-                while frontier:
-                    current = frontier.pop()
-                    for nxt in outgoing.get(current, []):
-                        if nxt in lineage:
-                            continue
-                        lineage.add(nxt)
-                        frontier.append(nxt)
-                table_lineages[table_id] = lineage
-
-        for pub_id in publication_tables:
-            publication_tables[pub_id].sort()
-
-        self._scope_publication_tables = dict(sorted(publication_tables.items(), key=lambda kv: kv[0].lower()))
-        self._scope_table_publication = table_publication
-        self._scope_table_lineages = table_lineages
-        self._scope_table_row_counts = table_row_counts
-        self._gene_to_rows = gene_to_rows
-        self._row_to_table = row_to_table
-        self._table_to_rows = table_to_rows
-        self._row_logfc = row_logfc
-        self._row_pvalue = row_pvalue
+        provenance = self.graph_service.build_provenance_index(self.all_triples)
+        self._scope_publication_tables = provenance.publication_tables
+        self._scope_table_publication = provenance.table_publication
+        self._scope_table_lineages = provenance.table_lineages
+        self._scope_table_row_counts = provenance.table_row_counts
+        self._gene_to_rows = provenance.gene_to_rows
+        self._row_to_table = provenance.row_to_table
+        self._table_to_rows = provenance.table_to_rows
+        self._row_logfc = provenance.row_logfc
+        self._row_pvalue = provenance.row_pvalue
+        self._gene_publications = provenance.gene_publications
+        self._gene_tables = provenance.gene_tables
+        self._gene_row_counts = provenance.gene_row_counts
 
     def _populate_overview_tree(self) -> None:
         previous_selection = self._selected_table_ids()
@@ -1177,6 +1145,7 @@ class KGExplorerWindow(QMainWindow):
         try:
             self.gene_combo.clear()
             self.gene_tree.clear()
+            self.gene_ranked_table.setRowCount(0)
             self._gene_display_to_id = {}
 
             if self.graph is None:
@@ -1211,6 +1180,8 @@ class KGExplorerWindow(QMainWindow):
             elif scoped_genes:
                 self.gene_combo.setCurrentIndex(0)
 
+            self._populate_gene_ranked_table(scoped_genes, selected_tables, current_gene_id)
+
             self.gene_summary_label.setText(f"Genes in current scope: {len(scoped_genes)}")
         finally:
             self.gene_combo.blockSignals(False)
@@ -1220,7 +1191,103 @@ class KGExplorerWindow(QMainWindow):
         if not gene_id:
             self.gene_summary_label.setText("Enter or select a gene first")
             return
+        self._set_gene_combo_to_gene_id(gene_id)
+        self._select_gene_ranked_row(gene_id)
         self._populate_gene_provenance_tree(gene_id)
+
+    def _set_gene_combo_to_gene_id(self, gene_id: str) -> None:
+        for idx in range(self.gene_combo.count()):
+            item_gene_id = self.gene_combo.itemData(idx)
+            if isinstance(item_gene_id, str) and item_gene_id == gene_id:
+                self.gene_combo.setCurrentIndex(idx)
+                return
+
+    def _scoped_gene_counts(self, gene_id: str, selected_tables: Set[str]) -> Tuple[int, int, int]:
+        scoped_tables = self._gene_tables.get(gene_id, set()).intersection(selected_tables)
+        scoped_publications: Set[str] = set()
+        for table_id in scoped_tables:
+            publication_id = self._scope_table_publication.get(table_id, "")
+            if publication_id:
+                scoped_publications.add(publication_id)
+
+        scoped_rows = 0
+        for row_id in self._gene_to_rows.get(gene_id, set()):
+            if self._row_to_table.get(row_id, "") in selected_tables:
+                scoped_rows += 1
+
+        return len(scoped_publications), len(scoped_tables), scoped_rows
+
+    def _populate_gene_ranked_table(
+        self,
+        scoped_genes: List[str],
+        selected_tables: Set[str],
+        selected_gene_id: str,
+    ) -> None:
+        rows: List[Tuple[str, int, int, int]] = []
+        for gene_id in scoped_genes:
+            pub_count, table_count, row_count = self._scoped_gene_counts(gene_id, selected_tables)
+            rows.append((gene_id, pub_count, table_count, row_count))
+
+        rows.sort(
+            key=lambda item: (-item[1], -item[2], -item[3], self.graph_service.gene_sort_key(item[0]))
+        )
+
+        self.gene_ranked_table.blockSignals(True)
+        try:
+            self.gene_ranked_table.setRowCount(len(rows))
+            for row_idx, (gene_id, pub_count, table_count, row_count) in enumerate(rows):
+                gene_label = self.graph_service.format_gene_display(gene_id)
+                gene_item = self._make_table_item(gene_label, raw_value=gene_id, display_override=gene_label)
+                self.gene_ranked_table.setItem(row_idx, 0, gene_item)
+                self.gene_ranked_table.setItem(row_idx, 1, self._make_table_item(str(pub_count), raw_value=str(pub_count)))
+                self.gene_ranked_table.setItem(row_idx, 2, self._make_table_item(str(table_count), raw_value=str(table_count)))
+                self.gene_ranked_table.setItem(row_idx, 3, self._make_table_item(str(row_count), raw_value=str(row_count)))
+
+            if len(rows) <= 1000:
+                self.gene_ranked_table.resizeColumnsToContents()
+        finally:
+            self.gene_ranked_table.blockSignals(False)
+
+        if selected_gene_id:
+            self._select_gene_ranked_row(selected_gene_id)
+
+    def _select_gene_ranked_row(self, gene_id: str) -> None:
+        self.gene_ranked_table.blockSignals(True)
+        try:
+            self.gene_ranked_table.clearSelection()
+            for row_idx in range(self.gene_ranked_table.rowCount()):
+                item = self.gene_ranked_table.item(row_idx, 0)
+                if item is None:
+                    continue
+                raw_gene_id = item.data(ITEM_USER_ROLE)
+                if isinstance(raw_gene_id, str) and raw_gene_id == gene_id:
+                    self.gene_ranked_table.selectRow(row_idx)
+                    self.gene_ranked_table.scrollToItem(item)
+                    break
+        finally:
+            self.gene_ranked_table.blockSignals(False)
+
+    def on_gene_ranked_selection_changed(self) -> None:
+        row_idx = self.gene_ranked_table.currentRow()
+        if row_idx < 0:
+            return
+
+        item = self.gene_ranked_table.item(row_idx, 0)
+        if item is None:
+            return
+        gene_id = item.data(ITEM_USER_ROLE)
+        if isinstance(gene_id, str) and gene_id:
+            self._set_gene_combo_to_gene_id(gene_id)
+
+    def on_gene_ranked_item_double_clicked(self, item: QTableWidgetItem) -> None:
+        row_idx = item.row()
+        gene_item = self.gene_ranked_table.item(row_idx, 0)
+        if gene_item is None:
+            return
+        gene_id = gene_item.data(ITEM_USER_ROLE)
+        if isinstance(gene_id, str) and gene_id:
+            self._set_gene_combo_to_gene_id(gene_id)
+            self._populate_gene_provenance_tree(gene_id)
 
     def _resolve_selected_gene_id(self) -> str:
         current_text = self.gene_combo.currentText().strip()
