@@ -20,6 +20,7 @@ from PyQt5.QtWidgets import (
     QApplication,
     QComboBox,
     QFileDialog,
+    QDoubleSpinBox,
     QGraphicsEllipseItem,
     QGraphicsItem,
     QGraphicsLineItem,
@@ -301,6 +302,10 @@ class KGExplorerWindow(QMainWindow):
         self._gene_tables: Dict[str, Set[str]] = {}
         self._gene_row_counts: Dict[str, int] = {}
         self._gene_display_to_id: Dict[str, str] = {}
+        self._gene_filtered_rows: Dict[str, List[str]] = {}
+        self._gene_filtered_publication_counts: Dict[str, int] = {}
+        self._gene_filtered_table_counts: Dict[str, int] = {}
+        self._gene_filtered_row_counts: Dict[str, int] = {}
         self._last_scope_rebuild_seconds = 0.0
         self._overview_tree_updating = False
         self._triples_page_index = 0
@@ -453,6 +458,45 @@ class KGExplorerWindow(QMainWindow):
         gene_controls.addWidget(self.gene_refresh_button)
 
         gene_layout.addLayout(gene_controls)
+        gene_filter_row = QHBoxLayout()
+        gene_filter_row.addWidget(QLabel("Min publications"))
+        self.gene_min_publications = QSpinBox()
+        self.gene_min_publications.setRange(1, 9999)
+        self.gene_min_publications.setValue(1)
+        self.gene_min_publications.valueChanged.connect(self.on_gene_filter_changed)
+        gene_filter_row.addWidget(self.gene_min_publications)
+
+        gene_filter_row.addWidget(QLabel("|Abs LogFC|"))
+        self.gene_abs_logfc_min = QDoubleSpinBox()
+        self.gene_abs_logfc_min.setRange(0.0, 1_000_000.0)
+        self.gene_abs_logfc_min.setDecimals(6)
+        self.gene_abs_logfc_min.setValue(0.0)
+        self.gene_abs_logfc_min.valueChanged.connect(self.on_gene_filter_changed)
+        gene_filter_row.addWidget(self.gene_abs_logfc_min)
+        gene_filter_row.addWidget(QLabel("to"))
+        self.gene_abs_logfc_max = QDoubleSpinBox()
+        self.gene_abs_logfc_max.setRange(0.0, 1_000_000.0)
+        self.gene_abs_logfc_max.setDecimals(6)
+        self.gene_abs_logfc_max.setValue(1_000_000.0)
+        self.gene_abs_logfc_max.valueChanged.connect(self.on_gene_filter_changed)
+        gene_filter_row.addWidget(self.gene_abs_logfc_max)
+
+        gene_filter_row.addWidget(QLabel("p-value"))
+        self.gene_pvalue_min = QDoubleSpinBox()
+        self.gene_pvalue_min.setRange(0.0, 1_000_000.0)
+        self.gene_pvalue_min.setDecimals(6)
+        self.gene_pvalue_min.setValue(0.0)
+        self.gene_pvalue_min.valueChanged.connect(self.on_gene_filter_changed)
+        gene_filter_row.addWidget(self.gene_pvalue_min)
+        gene_filter_row.addWidget(QLabel("to"))
+        self.gene_pvalue_max = QDoubleSpinBox()
+        self.gene_pvalue_max.setRange(0.0, 1_000_000.0)
+        self.gene_pvalue_max.setDecimals(6)
+        self.gene_pvalue_max.setValue(1_000_000.0)
+        self.gene_pvalue_max.valueChanged.connect(self.on_gene_filter_changed)
+        gene_filter_row.addWidget(self.gene_pvalue_max)
+        gene_filter_row.addStretch(1)
+        gene_layout.addLayout(gene_filter_row)
 
         self.gene_ranked_table = QTableWidget(0, 4)
         self.gene_ranked_table.setHorizontalHeaderLabels(["Gene", "Publications", "Tables", "Rows"])
@@ -460,13 +504,19 @@ class KGExplorerWindow(QMainWindow):
         self.gene_ranked_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.gene_ranked_table.itemSelectionChanged.connect(self.on_gene_ranked_selection_changed)
         self.gene_ranked_table.itemDoubleClicked.connect(self.on_gene_ranked_item_double_clicked)
-        gene_layout.addWidget(self.gene_ranked_table)
 
         self.gene_tree = QTreeWidget()
         self.gene_tree.setHeaderLabels(["Publication / Table / Row", "Count", "LogFC", "p-value"])
         self.gene_tree.itemDoubleClicked.connect(self.on_gene_tree_item_double_clicked)
         self.gene_tree.itemSelectionChanged.connect(self.on_gene_tree_selection_changed)
-        gene_layout.addWidget(self.gene_tree, 1)
+
+        self.gene_splitter = QSplitter(Qt.Vertical)
+        self.gene_splitter.addWidget(self.gene_ranked_table)
+        self.gene_splitter.addWidget(self.gene_tree)
+        self.gene_splitter.setStretchFactor(0, 1)
+        self.gene_splitter.setStretchFactor(1, 1)
+        self.gene_splitter.setSizes([320, 320])
+        gene_layout.addWidget(self.gene_splitter, 1)
 
         self.gene_summary_label = QLabel("No graph loaded")
         self.gene_summary_label.setWordWrap(True)
@@ -677,7 +727,7 @@ class KGExplorerWindow(QMainWindow):
         network_controls.addWidget(QLabel("View:"))
         self.network_detail_mode = QComboBox()
         self.network_detail_mode.addItem("Overview", "overview")
-        self.network_detail_mode.addItem("Tables", "tables")
+        self.network_detail_mode.addItem("Tables + rows", "tables")
         self.network_detail_mode.addItem("Full", "full")
         self.network_detail_mode.setCurrentIndex(0)
         self.network_detail_mode.setToolTip(
@@ -1173,9 +1223,56 @@ class KGExplorerWindow(QMainWindow):
     def on_gene_refresh_clicked(self) -> None:
         self._refresh_gene_scope_options()
 
+    def on_gene_filter_changed(self) -> None:
+        self._refresh_gene_scope_options()
+
+    def _current_gene_filter_bounds(self) -> Tuple[int, float, float, float, float]:
+        min_publications = int(self.gene_min_publications.value())
+        abs_logfc_min = float(self.gene_abs_logfc_min.value())
+        abs_logfc_max = float(self.gene_abs_logfc_max.value())
+        pvalue_min = float(self.gene_pvalue_min.value())
+        pvalue_max = float(self.gene_pvalue_max.value())
+
+        if abs_logfc_min > abs_logfc_max:
+            abs_logfc_min, abs_logfc_max = abs_logfc_max, abs_logfc_min
+        if pvalue_min > pvalue_max:
+            pvalue_min, pvalue_max = pvalue_max, pvalue_min
+
+        return min_publications, abs_logfc_min, abs_logfc_max, pvalue_min, pvalue_max
+
+    def _row_matches_gene_metric_filters(self, row_id: str) -> bool:
+        _, abs_logfc_min, abs_logfc_max, pvalue_min, pvalue_max = self._current_gene_filter_bounds()
+
+        logfc_text = self._row_logfc.get(row_id, "")
+        pvalue_text = self._row_pvalue.get(row_id, "")
+        logfc_num = self._parse_metric_numeric(logfc_text)
+        pvalue_num = self._parse_metric_numeric(pvalue_text)
+
+        if logfc_num is None or pvalue_num is None:
+            return False
+
+        abs_logfc = abs(logfc_num)
+        if abs_logfc < abs_logfc_min or abs_logfc > abs_logfc_max:
+            return False
+        if pvalue_num < pvalue_min or pvalue_num > pvalue_max:
+            return False
+        return True
+
+    def _rows_for_gene_with_active_filters(self, gene_id: str, selected_tables: Set[str]) -> List[str]:
+        filtered_rows: List[str] = []
+        for row_id in sorted(self._gene_to_rows.get(gene_id, set())):
+            table_id = self._row_to_table.get(row_id, "")
+            if not table_id or table_id not in selected_tables:
+                continue
+            if not self._row_matches_gene_metric_filters(row_id):
+                continue
+            filtered_rows.append(row_id)
+        return filtered_rows
+
     def _refresh_gene_scope_options(self) -> None:
         current_gene_id = self._resolve_selected_gene_id()
         selected_tables = self._selected_table_ids()
+        min_publications, _, _, _, _ = self._current_gene_filter_bounds()
 
         self.gene_combo.blockSignals(True)
         try:
@@ -1183,6 +1280,10 @@ class KGExplorerWindow(QMainWindow):
             self.gene_tree.clear()
             self.gene_ranked_table.setRowCount(0)
             self._gene_display_to_id = {}
+            self._gene_filtered_rows = {}
+            self._gene_filtered_publication_counts = {}
+            self._gene_filtered_table_counts = {}
+            self._gene_filtered_row_counts = {}
 
             if self.graph is None:
                 self.gene_summary_label.setText("No graph loaded")
@@ -1192,14 +1293,31 @@ class KGExplorerWindow(QMainWindow):
                 self.gene_summary_label.setText("No tables selected in Overview")
                 return
 
-            scoped_rows: Set[str] = set()
-            for table_id in selected_tables:
-                scoped_rows.update(self._table_to_rows.get(table_id, set()))
-
             scoped_genes: List[str] = []
-            for gene_id, row_ids in self._gene_to_rows.items():
-                if row_ids.intersection(scoped_rows):
-                    scoped_genes.append(gene_id)
+            for gene_id in self._gene_to_rows.keys():
+                filtered_rows = self._rows_for_gene_with_active_filters(gene_id, selected_tables)
+                if not filtered_rows:
+                    continue
+
+                filtered_tables: Set[str] = set()
+                filtered_publications: Set[str] = set()
+                for row_id in filtered_rows:
+                    table_id = self._row_to_table.get(row_id, "")
+                    if not table_id:
+                        continue
+                    filtered_tables.add(table_id)
+                    publication_id = self._scope_table_publication.get(table_id, "")
+                    if publication_id:
+                        filtered_publications.add(publication_id)
+
+                if len(filtered_publications) < min_publications:
+                    continue
+
+                scoped_genes.append(gene_id)
+                self._gene_filtered_rows[gene_id] = filtered_rows
+                self._gene_filtered_publication_counts[gene_id] = len(filtered_publications)
+                self._gene_filtered_table_counts[gene_id] = len(filtered_tables)
+                self._gene_filtered_row_counts[gene_id] = len(filtered_rows)
 
             scoped_genes.sort(key=self.graph_service.gene_sort_key)
             for gene_id in scoped_genes:
@@ -1216,7 +1334,7 @@ class KGExplorerWindow(QMainWindow):
             elif scoped_genes:
                 self.gene_combo.setCurrentIndex(0)
 
-            self._populate_gene_ranked_table(scoped_genes, selected_tables, current_gene_id)
+            self._populate_gene_ranked_table(scoped_genes, current_gene_id)
 
             self.gene_summary_label.setText(f"Genes in current scope: {len(scoped_genes)}")
         finally:
@@ -1238,30 +1356,16 @@ class KGExplorerWindow(QMainWindow):
                 self.gene_combo.setCurrentIndex(idx)
                 return
 
-    def _scoped_gene_counts(self, gene_id: str, selected_tables: Set[str]) -> Tuple[int, int, int]:
-        scoped_tables = self._gene_tables.get(gene_id, set()).intersection(selected_tables)
-        scoped_publications: Set[str] = set()
-        for table_id in scoped_tables:
-            publication_id = self._scope_table_publication.get(table_id, "")
-            if publication_id:
-                scoped_publications.add(publication_id)
-
-        scoped_rows = 0
-        for row_id in self._gene_to_rows.get(gene_id, set()):
-            if self._row_to_table.get(row_id, "") in selected_tables:
-                scoped_rows += 1
-
-        return len(scoped_publications), len(scoped_tables), scoped_rows
-
     def _populate_gene_ranked_table(
         self,
         scoped_genes: List[str],
-        selected_tables: Set[str],
         selected_gene_id: str,
     ) -> None:
         rows: List[Tuple[str, int, int, int]] = []
         for gene_id in scoped_genes:
-            pub_count, table_count, row_count = self._scoped_gene_counts(gene_id, selected_tables)
+            pub_count = self._gene_filtered_publication_counts.get(gene_id, 0)
+            table_count = self._gene_filtered_table_counts.get(gene_id, 0)
+            row_count = self._gene_filtered_row_counts.get(gene_id, 0)
             rows.append((gene_id, pub_count, table_count, row_count))
 
         rows.sort(
@@ -1357,7 +1461,9 @@ class KGExplorerWindow(QMainWindow):
             self.gene_summary_label.setText("No tables selected in Overview")
             return
 
-        row_ids = self._gene_to_rows.get(gene_id, set())
+        row_ids = set(self._gene_filtered_rows.get(gene_id, []))
+        if not row_ids:
+            row_ids = set(self._rows_for_gene_with_active_filters(gene_id, selected_tables))
         if not row_ids:
             self.gene_summary_label.setText("Gene not found in current graph")
             return
