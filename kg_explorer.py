@@ -182,6 +182,7 @@ class NetworkEdgeItem(QGraphicsLineItem):
         self.predicate = predicate
         self._base_color = QColor("#8fa0b3")
         self._highlighted = False
+        self._dimmed = False
         self.source_item.edge_items.append(self)
         self.target_item.edge_items.append(self)
         self.setPen(QPen(self._base_color, 1.4))
@@ -192,8 +193,7 @@ class NetworkEdgeItem(QGraphicsLineItem):
     def set_base_color(self, color: QColor) -> None:
         self._base_color = QColor(color)
         if not self._highlighted:
-            self.setPen(QPen(self._base_color, 1.4))
-            self.setZValue(0)
+            self._apply_visual_state()
 
     def set_highlighted(self, highlighted: bool) -> None:
         self._highlighted = highlighted
@@ -201,8 +201,23 @@ class NetworkEdgeItem(QGraphicsLineItem):
             self.setPen(QPen(QColor("#d9480f"), 2.6))
             self.setZValue(1)
         else:
-            self.setPen(QPen(self._base_color, 1.4))
-            self.setZValue(0)
+            self._apply_visual_state()
+
+    def set_dimmed(self, dimmed: bool) -> None:
+        self._dimmed = dimmed
+        if not self._highlighted:
+            self._apply_visual_state()
+
+    def _apply_visual_state(self) -> None:
+        color = QColor(self._base_color)
+        width = 1.4
+        z_value = 0
+        if self._dimmed:
+            color.setAlpha(55)
+            width = 1.0
+            z_value = -0.2
+        self.setPen(QPen(color, width))
+        self.setZValue(z_value)
 
     def update_position(self) -> None:
         source_pos = self.source_item.scenePos()
@@ -271,6 +286,8 @@ class KGExplorerWindow(QMainWindow):
         self._network_table_lineages: Dict[str, Set[str]] = {}
         self._network_table_children: Dict[str, Set[str]] = {}
         self._network_legend_table_links: Dict[str, str] = {}
+        self._network_table_focus_identifiers: Set[str] = set()
+        self._network_table_focus_tables: Set[str] = set()
         self._scope_publication_tables: Dict[str, List[str]] = {}
         self._scope_table_publication: Dict[str, str] = {}
         self._scope_table_lineages: Dict[str, Set[str]] = {}
@@ -396,6 +413,7 @@ class KGExplorerWindow(QMainWindow):
         self.overview_tree = QTreeWidget()
         self.overview_tree.setHeaderLabels(["Publication / Table", "Rows"])
         self.overview_tree.itemChanged.connect(self.on_overview_tree_item_changed)
+        self.overview_tree.itemSelectionChanged.connect(self.on_overview_tree_selection_changed)
         overview_layout.addWidget(self.overview_tree, 1)
 
         self.overview_summary_label = QLabel("No graph loaded")
@@ -447,6 +465,7 @@ class KGExplorerWindow(QMainWindow):
         self.gene_tree = QTreeWidget()
         self.gene_tree.setHeaderLabels(["Publication / Table / Row", "Count", "LogFC", "p-value"])
         self.gene_tree.itemDoubleClicked.connect(self.on_gene_tree_item_double_clicked)
+        self.gene_tree.itemSelectionChanged.connect(self.on_gene_tree_selection_changed)
         gene_layout.addWidget(self.gene_tree, 1)
 
         self.gene_summary_label = QLabel("No graph loaded")
@@ -970,9 +989,14 @@ class KGExplorerWindow(QMainWindow):
 
     def on_clear_network_selection_clicked(self) -> None:
         self._network_focus_identifiers = []
+        self._network_table_focus_identifiers = set()
+        self._network_table_focus_tables = set()
         self._select_network_nodes([])
+        self._render_network_legend()
+        self._set_html_text(self.detail_text, "")
         self._reset_triples_paging()
         self._render_current_triples_table()
+        self._clear_triples_table_selection()
 
     def set_predicate_filter_preset(self, predicate: str) -> None:
         self.predicate_filter.setText(predicate)
@@ -1134,6 +1158,18 @@ class KGExplorerWindow(QMainWindow):
         finally:
             self._end_busy_cursor(f"Scope applied: {len(self.filtered_triples)} triples")
 
+    def on_overview_tree_selection_changed(self) -> None:
+        selected_publications: List[str] = []
+        for item in self.overview_tree.selectedItems():
+            if item.data(0, OVERVIEW_KIND_ROLE) != "publication":
+                continue
+            publication_id = str(item.data(0, OVERVIEW_ID_ROLE) or "")
+            if publication_id:
+                selected_publications.append(publication_id)
+
+        if selected_publications:
+            self._update_detail_and_metadata([selected_publications[0]])
+
     def on_gene_refresh_clicked(self) -> None:
         self._refresh_gene_scope_options()
 
@@ -1245,6 +1281,7 @@ class KGExplorerWindow(QMainWindow):
 
             if len(rows) <= 1000:
                 self.gene_ranked_table.resizeColumnsToContents()
+            self.gene_ranked_table.setColumnWidth(0, max(self.gene_ranked_table.columnWidth(0), 420))
         finally:
             self.gene_ranked_table.blockSignals(False)
 
@@ -1355,6 +1392,7 @@ class KGExplorerWindow(QMainWindow):
 
             for table_id in sorted(grouped[publication_id].keys()):
                 table_rows = grouped[publication_id][table_id]
+                sorted_table_rows = sorted(table_rows, key=self._gene_row_sort_key)
                 table_label = self.graph_service.display_value_with_uuid_context(
                     table_id,
                     input_dir=self.input_dir,
@@ -1365,7 +1403,7 @@ class KGExplorerWindow(QMainWindow):
                 table_item.setData(0, OVERVIEW_KIND_ROLE, "gene_table")
                 table_item.setData(0, OVERVIEW_ID_ROLE, table_id)
 
-                for row_id in table_rows:
+                for row_id in sorted_table_rows:
                     row_label = self.graph_service.display_value_with_uuid_context(
                         row_id,
                         input_dir=self.input_dir,
@@ -1418,6 +1456,47 @@ class KGExplorerWindow(QMainWindow):
 
         if kind == "gene_table":
             self._focus_table_lineage(identifier)
+
+    @staticmethod
+    def _parse_metric_numeric(value: str) -> Optional[float]:
+        text = str(value).strip()
+        if not text:
+            return None
+
+        try:
+            return float(text)
+        except ValueError:
+            pass
+
+        lower = text.lower()
+        if lower.startswith("bin_"):
+            suffix = lower.split("_", 1)[1]
+            if suffix.isdigit():
+                return float(int(suffix))
+        return None
+
+    def _gene_row_sort_key(self, row_id: str) -> Tuple[float, float, str]:
+        logfc_text = self._row_logfc.get(row_id, "")
+        pvalue_text = self._row_pvalue.get(row_id, "")
+
+        logfc_num = self._parse_metric_numeric(logfc_text)
+        pvalue_num = self._parse_metric_numeric(pvalue_text)
+
+        abs_logfc = abs(logfc_num) if logfc_num is not None else float("-inf")
+        pvalue_sort = pvalue_num if pvalue_num is not None else float("inf")
+        return (-abs_logfc, pvalue_sort, row_id)
+
+    def on_gene_tree_selection_changed(self) -> None:
+        selected_publications: List[str] = []
+        for item in self.gene_tree.selectedItems():
+            if item.data(0, OVERVIEW_KIND_ROLE) != "gene_publication":
+                continue
+            publication_id = str(item.data(0, OVERVIEW_ID_ROLE) or "")
+            if publication_id:
+                selected_publications.append(publication_id)
+
+        if selected_publications:
+            self._update_detail_and_metadata([selected_publications[0]])
 
     def _selected_table_ids(self) -> Set[str]:
         selected: Set[str] = set()
@@ -1520,6 +1599,33 @@ class KGExplorerWindow(QMainWindow):
 
         if match_index >= 0:
             self._triples_page_index = match_index // DEFAULT_VISIBLE_TRIPLES
+
+    def _set_triples_page_for_table_focus(self, lineage_identifiers: Set[str], focused_tables: Set[str]) -> None:
+        if not lineage_identifiers or not focused_tables:
+            return
+
+        match_index = -1
+        for idx, (subj, pred, obj) in enumerate(self._iter_prioritized_triples(self.filtered_triples)):
+            if not self._matches_table_focus_triple(subj, pred, obj, lineage_identifiers, focused_tables):
+                continue
+            match_index = idx
+            break
+
+        if match_index >= 0:
+            self._triples_page_index = match_index // DEFAULT_VISIBLE_TRIPLES
+
+    def _matches_table_focus_triple(
+        self,
+        subj: str,
+        pred: str,
+        obj: str,
+        lineage_identifiers: Set[str],
+        focused_tables: Set[str],
+    ) -> bool:
+        # Keep parent publication -> has_output edges only for currently focused tables.
+        if self._is_publication_node(subj) and self._is_has_output_predicate(pred):
+            return obj in focused_tables
+        return subj in lineage_identifiers or obj in lineage_identifiers
 
     def _render_current_triples_table(self) -> None:
         self._render_triples_table(self._focused_triples())
@@ -2021,13 +2127,28 @@ class KGExplorerWindow(QMainWindow):
 
         return node_colors, edge_colors, table_colors, table_publications, table_lineages, table_children
 
-    def _render_network_legend(self, label_resolver: Any) -> None:
+    def _render_network_legend(self, label_resolver: Optional[Any] = None) -> None:
         self._network_legend_table_links = {}
         if not self._network_table_colors:
             self._set_html_text(self.network_legend_text, "<b>Table legend:</b><br>None")
             return
 
+        if label_resolver is None:
+            def label_resolver(value: str) -> str:
+                return self.graph_service.display_value_with_uuid_context(
+                    value,
+                    input_dir=self.input_dir,
+                    graph_path=self.current_graph_path,
+                    resolve_row_context=True,
+                )
+
         parts: List[str] = ["<b>Table legend:</b>"]
+        focused_count = len(self._network_table_focus_tables)
+        if focused_count > 0:
+            parts.append(
+                f'<span style="background:#fff4ce; border:1px solid #f59f00; border-radius:4px; '
+                f'padding:2px 6px; font-weight:600;">Focused tables: {focused_count}</span>'
+            )
         legend_entries: List[Tuple[str, str, str, QColor]] = []
         for table_id, color in self._network_table_colors.items():
             publication_id = self._network_table_publications.get(table_id, "")
@@ -2046,10 +2167,24 @@ class KGExplorerWindow(QMainWindow):
             if publication_label != current_pub_display:
                 parts.append(f"<b>{publication_label}</b>")
                 current_pub_display = publication_label
+
+            selected_style_open = ""
+            selected_style_close = ""
+            selected_marker = ""
+            if table_id in self._network_table_focus_tables:
+                selected_style_open = (
+                    '<span style="background:#fff4ce; border:1px solid #f59f00; '
+                    'border-radius:4px; padding:1px 4px; font-weight:700;">'
+                )
+                selected_style_close = "</span>"
+                selected_marker = "&#10003; "
+
             parts.append(
                 f'<a href="table:{link_key}">'
-                f'<span style="color:{color_hex}; font-size:14pt;">&#9632;</span> '
-                f"{table_label}</a>"
+                f"{selected_style_open}"
+                f'{selected_marker}<span style="color:{color_hex}; font-size:14pt;">&#9632;</span> '
+                f"{table_label}"
+                f"{selected_style_close}</a>"
             )
 
         self._set_html_text(self.network_legend_text, "<br>".join(parts))
@@ -2083,39 +2218,80 @@ class KGExplorerWindow(QMainWindow):
         if not table_id:
             return
 
-        self._focus_table_lineage(table_id)
+        modifiers = QApplication.keyboardModifiers()
+        ctrl_pressed = bool(modifiers & Qt.ControlModifier)
+        if ctrl_pressed:
+            focused_tables = set(self._network_table_focus_tables)
+            if table_id in focused_tables:
+                focused_tables.remove(table_id)
+            else:
+                focused_tables.add(table_id)
+            self._focus_table_lineages(focused_tables, primary_table_id=table_id)
+            return
+
+        self._focus_table_lineages({table_id}, primary_table_id=table_id)
 
     def _focus_table_lineage(self, table_id: str) -> None:
-        lineage_ids = set(self._network_table_lineages.get(table_id, set()))
-        if not lineage_ids:
-            lineage_ids = {table_id}
+        self._focus_table_lineages({table_id}, primary_table_id=table_id)
 
-        publication_id = self._network_table_publications.get(table_id, "")
-        if publication_id:
-            lineage_ids.add(publication_id)
+    def _focus_table_lineages(self, table_ids: Set[str], primary_table_id: str = "") -> None:
+        self._network_table_focus_tables = set(table_ids)
+        self._render_network_legend()
+        if not table_ids:
+            self._network_table_focus_identifiers = set()
+            self._network_focus_identifiers = []
+            self._apply_network_node_highlight(set())
+            self._apply_network_edge_highlight(set(), set())
+            self._set_html_text(self.detail_text, "")
+            self._clear_triples_table_selection()
+            return
+
+        lineage_ids: Set[str] = set()
+        publication_ids: Set[str] = set()
+        for table_id in table_ids:
+            table_lineage = set(self._network_table_lineages.get(table_id, set()))
+            if not table_lineage:
+                table_lineage = {table_id}
+            lineage_ids.update(table_lineage)
+            publication_id = self._network_table_publications.get(table_id, "")
+            if publication_id:
+                lineage_ids.add(publication_id)
+                publication_ids.add(publication_id)
+
+        self._network_table_focus_identifiers = set(lineage_ids)
 
         visible_ids = [identifier for identifier in lineage_ids if identifier in self._network_node_items]
         self._select_network_nodes(visible_ids)
 
+        primary_table = primary_table_id or sorted(table_ids)[0]
+        primary_label = self.graph_service.display_value_with_uuid_context(
+            primary_table,
+            input_dir=self.input_dir,
+            graph_path=self.current_graph_path,
+            resolve_row_context=True,
+        )
         detail_values = [
-            f"Table: {self.graph_service.display_value_with_uuid_context(table_id, input_dir=self.input_dir, graph_path=self.current_graph_path, resolve_row_context=True)}",
-            f"Publication: {self.graph_service.display_value_with_uuid_context(publication_id, input_dir=self.input_dir, graph_path=self.current_graph_path, resolve_row_context=True) if publication_id else '(none)'}",
+            f"Focused tables: {len(table_ids)}",
+            f"Primary table: {primary_label}",
+            f"Publications covered: {len(publication_ids)}",
             f"Lineage nodes: {len(lineage_ids)}",
             f"Visible nodes in current view: {len(visible_ids)}",
+            "Tip: Ctrl-click legend entries to add/remove tables from focus.",
         ]
 
         self._selection_sync_active = True
         try:
             self._network_focus_identifiers = sorted(lineage_ids)
             self._update_detail_and_metadata(detail_values)
-            self._set_triples_page_for_identifiers(lineage_ids)
+            self._set_triples_page_for_table_focus(lineage_ids, table_ids)
             self._render_current_triples_table()
             self.tabs.setCurrentWidget(self.triples_tab)
-            self._select_triple_rows_for_identifiers(lineage_ids)
+            self._select_triple_rows_for_table_focus(lineage_ids, table_ids)
         finally:
             self._selection_sync_active = False
 
     def _apply_network_node_highlight(self, identifiers: set[str]) -> None:
+        focused_identifiers = self._network_table_focus_identifiers
         for identifier, item in self._network_node_items.items():
             node = self._network_node_lookup.get(identifier)
             if node is None:
@@ -2124,6 +2300,12 @@ class KGExplorerWindow(QMainWindow):
             brush_color = self._network_group_node_colors.get(identifier, self._network_node_color(node))
             label_color = QColor("#1f2933")
             pen = QPen(QColor("#314355"), 1.2)
+            if focused_identifiers and identifier not in focused_identifiers:
+                dim_color = QColor(brush_color)
+                dim_color.setAlpha(65)
+                brush_color = dim_color
+                label_color = QColor("#7f8c96")
+                pen = QPen(QColor("#9aa5b1"), 0.8)
             if identifier in identifiers:
                 brush_color = brush_color.lighter(120)
                 label_color = QColor("#7c2d12")
@@ -2135,6 +2317,7 @@ class KGExplorerWindow(QMainWindow):
                 item.label_item.setBrush(QBrush(label_color))
 
     def _apply_network_edge_highlight(self, edge_keys: set[Tuple[str, str, str]], node_identifiers: set[str]) -> None:
+        focused_identifiers = self._network_table_focus_identifiers
         for edge_item in self._network_edge_items:
             edge_key = (
                 str(edge_item.source_item.data(0) or ""),
@@ -2144,6 +2327,12 @@ class KGExplorerWindow(QMainWindow):
             highlighted = edge_key in edge_keys
             if not highlighted and node_identifiers:
                 highlighted = edge_key[0] in node_identifiers or edge_key[2] in node_identifiers
+            dimmed = bool(
+                focused_identifiers
+                and edge_key[0] not in focused_identifiers
+                and edge_key[2] not in focused_identifiers
+            )
+            edge_item.set_dimmed(dimmed)
             edge_item.set_highlighted(highlighted)
 
     def _select_network_nodes(self, identifiers: Iterable[str]) -> None:
@@ -2172,6 +2361,45 @@ class KGExplorerWindow(QMainWindow):
                 subj = self._table_value(self.triples_table, row, 0)
                 obj = self._table_value(self.triples_table, row, 2)
                 if subj not in target_identifiers and obj not in target_identifiers:
+                    continue
+                matching_rows.append(row)
+
+            if matching_rows:
+                self.triples_table.setCurrentCell(matching_rows[0], 0)
+                for row in matching_rows:
+                    for col in range(self.triples_table.columnCount()):
+                        item = self.triples_table.item(row, col)
+                        if item is not None:
+                            item.setSelected(True)
+                first_item = self.triples_table.item(matching_rows[0], 0)
+                if first_item is not None:
+                    self.triples_table.scrollToItem(first_item)
+        finally:
+            self.triples_table.blockSignals(False)
+
+    def _clear_triples_table_selection(self) -> None:
+        self.triples_table.blockSignals(True)
+        try:
+            self.triples_table.clearSelection()
+            self.triples_table.setCurrentCell(-1, -1)
+        finally:
+            self.triples_table.blockSignals(False)
+
+    def _select_triple_rows_for_table_focus(self, lineage_identifiers: Set[str], focused_tables: Set[str]) -> None:
+        if not lineage_identifiers or not focused_tables:
+            self._select_triple_rows_for_identifiers([])
+            return
+
+        matching_rows: List[int] = []
+
+        self.triples_table.blockSignals(True)
+        try:
+            self.triples_table.clearSelection()
+            for row in range(self.triples_table.rowCount()):
+                subj = self._table_value(self.triples_table, row, 0)
+                pred = self._table_value(self.triples_table, row, 1)
+                obj = self._table_value(self.triples_table, row, 2)
+                if not self._matches_table_focus_triple(subj, pred, obj, lineage_identifiers, focused_tables):
                     continue
                 matching_rows.append(row)
 
@@ -2274,6 +2502,10 @@ class KGExplorerWindow(QMainWindow):
         if not selected_items:
             self._network_focus_identifiers = []
             if not self._selection_sync_active:
+                self._network_table_focus_identifiers = set()
+                self._network_table_focus_tables = set()
+                self._render_network_legend()
+            if not self._selection_sync_active:
                 self._reset_triples_paging()
                 self._render_current_triples_table()
             self._apply_network_node_highlight(set())
@@ -2288,6 +2520,10 @@ class KGExplorerWindow(QMainWindow):
 
         if not node_identifiers:
             self._network_focus_identifiers = []
+            if not self._selection_sync_active:
+                self._network_table_focus_identifiers = set()
+                self._network_table_focus_tables = set()
+                self._render_network_legend()
             if not self._selection_sync_active:
                 self._reset_triples_paging()
                 self._render_current_triples_table()
@@ -2310,6 +2546,10 @@ class KGExplorerWindow(QMainWindow):
         self._update_detail_and_metadata(values)
         if self._selection_sync_active:
             return
+
+        self._network_table_focus_identifiers = set()
+        self._network_table_focus_tables = set()
+        self._render_network_legend()
 
         self._selection_sync_active = True
         try:
