@@ -18,6 +18,25 @@ git checkout dev
 ```
 ... and then return to the parent directory (cd ..), the examples below do this to avoid mixing code and data. With the current immature version of the code, you may need to install modules to run the code.
 
+### Linux quick setup
+From the project root (this directory), run:
+```
+bash setup_linux.sh
+source .venv/bin/activate
+```
+
+This project now includes:
+* requirements.txt (Python dependencies used by scripts/tests)
+* setup_linux.sh (creates/uses .venv and installs dependencies)
+
+By default, the virtual environment is created at .venv inside the project root. This is the recommended default for this repository because it keeps tooling/editor discovery simple and avoids mixing environments across projects.
+
+To use a different location, set VENV_DIR when running setup:
+```
+VENV_DIR=/path/to/venvs/akg bash setup_linux.sh
+source /path/to/venvs/akg/bin/activate
+```
+
 For faster graph browsing in kg_explorer.py, the loader can also open .hdt files. If you want to keep SPARQL querying over .hdt graphs, install the rdflib-hdt package:
 ```
 pip install rdflib-hdt

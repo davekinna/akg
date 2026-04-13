@@ -1,0 +1,24 @@
+# Core runtime dependencies used across AKG scripts
+beautifulsoup4
+biopython
+Flask
+google-generativeai
+matplotlib
+metapub
+networkx
+openpyxl
+pandas
+pypdf
+PyQt5
+python-dotenv
+rdflib
+requests
+selenium
+xlrd
+
+# Developer/test dependency
+pytest
+
+# Optional HDT extras for kg_explorer.py and bin_edam.py workflows
+# rdflib-hdt
+# hdt
