@@ -54,7 +54,7 @@ This section is an outline of the project and available code.  I assume here you
 
 All code files named below have a command line interface that give some control of configuration. Type, for example:
 ```
-python akg\data_convert.py --help
+python akg\/data_convert.py --help
 ```
 to run the code and identify the available options.  In the following examples many of the defaults have been used, and so the tracking file, for example, is given the name 'akg_tracking.xlsx'. If you change this at an early stage, subsequent steps must be supplied with the same value because they read from as well as write to the tracking file.
 
@@ -70,7 +70,7 @@ Steps in creating and using a graph are as follows:
 
 Use this as follows:
 ```
-python akg\processing.py -o <top_level>
+python akg\/processing.py -o <top_level>
 ```
 
 The data files are output to <top_level>/supp_data.  The next level of directories under supp_data is named by the numeric pubmed ID value. 
