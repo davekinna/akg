@@ -54,7 +54,7 @@ This section is an outline of the project and available code.  I assume here you
 
 All code files named below have a command line interface that give some control of configuration. Type, for example:
 ```
-python akg\/data_convert.py --help
+python akg/data_convert.py --help
 ```
 to run the code and identify the available options.  In the following examples many of the defaults have been used, and so the tracking file, for example, is given the name 'akg_tracking.xlsx'. If you change this at an early stage, subsequent steps must be supplied with the same value because they read from as well as write to the tracking file.
 
@@ -70,7 +70,7 @@ Steps in creating and using a graph are as follows:
 
 Use this as follows:
 ```
-python akg\/processing.py -o <top_level>
+python akg/processing.py -o <top_level>
 ```
 
 The data files are output to <top_level>/supp_data.  The next level of directories under supp_data is named by the numeric pubmed ID value. 
@@ -83,7 +83,7 @@ Excluding downloaded data at this point based on PMID can be achieved by deletin
 
 Use this as follows:
 ```
-python akg\data_split.py -i <top_level>
+python akg/data_split.py -i <top_level>
 ```
 This will have created a file in the data directories, alongside the source data that was downloaded, called split_*tablename*.csv.
 These are now the working data files. data_split.py also will have created a tracking file called (by default) akg_tracking.xlsx, and a log file called data_split.log.
@@ -93,7 +93,7 @@ These are now the working data files. data_split.py also will have created a tra
 
 Use this as follows:
 ```
-python akg\data_convert.py -i <top_level>
+python akg/data_convert.py -i <top_level>
 ```
 The derived dataset files are named expdata_<filename>.csv, where <filename> is the data file that it came from. These are in the same directory as the datafile itself.
 
@@ -102,11 +102,11 @@ The derived dataset files are named expdata_<filename>.csv, where <filename> is 
 
 Use this as follows:
 ```
-python akg\genai_check.py -i <top_level>
+python akg/genai_check.py -i <top_level>
 ```
 This needs to be run after data_convert.py has been run. It looks for the derived dataset file names (with name expdata_*) and updates the value in column 'suitable' with TRUE if it judges the given file to be of further use, and puts its reasoning (whatever the outcome) in column 'suitablereason'.  If you judge that the AI check has been giving a good selection, use the -e argument to set the values in the 'excl' column to the same as those in the AI choice (see step 4 below):
 ```
-python akg\genai_check.py -e -i <top_level>
+python akg/genai_check.py -e -i <top_level>
 ```
 
 4. Inspection and manual exclusion of data. 
