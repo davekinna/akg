@@ -1,5 +1,6 @@
 #This file searches the Entrez database for relevant papers, retrieves their DOIs metadata, obtains a pdf 
 # of the original paper, and all supporting data xlsx files
+# Linux adapted
 
 import logging
 
