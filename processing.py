@@ -4,13 +4,25 @@
 
 import logging
 
-from Bio import Entrez
 from dotenv import load_dotenv
-
-
 import os
+# Load environment variables from .env file
+load_dotenv()
+
+from Bio import Entrez
+# a suitable format for the line in the .env file is:
+# ENTREZ_API_KEY="Your-API-Key-Here"
+# include .env in .gitignore.
+
+# set the API key immediately, from the environment
+Entrez.api_key = os.getenv('ENTREZ_API_KEY')
+
+if not Entrez.api_key:
+    raise ValueError("API key not found. Please set it in the environment or your .env file.")
+
 import argparse
 import sys
+import time
 from bs4 import BeautifulSoup,  SoupStrainer
 import requests
 from urllib.request import urlopen, urlretrieve
@@ -25,17 +37,6 @@ from urllib.parse import urljoin
 from akg import AKGException, akg_logging_config
 import configparser
 
-# Load environment variables from .env file
-load_dotenv()
-# a suitable format for the line in the .env file is:
-# ENTREZ_API_KEY="Your-API-Key-Here"
-# include .env in .gitignore.
-
-# Get the API key from the environment
-Entrez.api_key = os.getenv('ENTREZ_API_KEY')
-
-if not Entrez.api_key:
-    raise ValueError("API key not found. Please set it in your .env file.")
 
 
 def get_search_result(query:str='', email:str='', count:int=30) -> dict:
@@ -289,30 +290,32 @@ def get_upw(doi_list:list[str], valid_pmids: list[str], output_dir:str, email:st
 
 
 def get_metadata(plist: list[int], dlist: list[str], article_metadata_file:str):
+    print(f"get_metadata: Entrez email set to: {Entrez.email}")
     fetch = PubMedFetcher()
+    time.sleep(5)
     articles = {}
     for pmid in plist:
-        articles[pmid] = fetch.article_by_pmid(pmid)
+        articles[pmid] = fetch.article_by_pmid(str(pmid))
 
     # Extract relevant information and create DataFrames
     titles = {}
     for pmid in plist:
-        titles[pmid] = fetch.article_by_pmid(pmid).title
+        titles[pmid] = fetch.article_by_pmid(str(pmid)).title
     Title = pd.DataFrame(list(titles.items()), columns=['pmid', 'title'])
 
     dates = {}
     for pmid in plist:
-        dates[pmid] = fetch.article_by_pmid(pmid).year
+        dates[pmid] = fetch.article_by_pmid(str(pmid)).year
     Date = pd.DataFrame(list(dates.items()), columns=['pmid', 'year'])
 
     journals = {}
     for pmid in plist:
-        journals[pmid] = fetch.article_by_pmid(pmid).journal 
+        journals[pmid] = fetch.article_by_pmid(str(pmid)).journal 
     Journal = pd.DataFrame(list(journals.items()), columns=['pmid', 'journal'])
 
     abstracts = {}
     for pmid in plist:
-        abstracts[pmid] = fetch.article_by_pmid(pmid).abstract
+        abstracts[pmid] = fetch.article_by_pmid(str(pmid)).abstract
     Abstract = pd.DataFrame(list(abstracts.items()), columns=['pmid', 'abstract'])
 
     Doi = pd.DataFrame({'pmid': plist, 'doi': dlist})
@@ -343,6 +346,7 @@ def get_metadata_pmid(pmid:str, article_metadata_file:str):
     Both must be supplied
 
     """
+
     fetch = PubMedFetcher()
     article = fetch.article_by_pmid(pmid)
     title   = fetch.article_by_pmid(pmid).title
