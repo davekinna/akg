@@ -201,12 +201,14 @@ class GeneIdStore:
         self._ens:dict[str,str] = {}
         self._oth:dict[str,str] = {}
 
-        self._setup_hgnc_mapping(hgnc_file)
-
-        # Assume the file is in the same location as this file (akg.py)
+        # Assume the files are in the same location as this file (akg.py)
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        full_path = os.path.join(script_dir, source)
-        with open(full_path, 'r') as file:
+        full_path_gene_ids = os.path.join(script_dir, source)
+        full_path_hgnc_file = os.path.join(script_dir, hgnc_file)
+
+        self._setup_hgnc_mapping(full_path_hgnc_file)
+
+        with open(full_path_gene_ids, 'r') as file:
             next(file)  
             lines = file.readlines()
             self._lines = [line.upper() for line in lines]

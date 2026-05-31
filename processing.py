@@ -85,13 +85,14 @@ def get_dois(plist: list[int]) -> tuple[list[int], list[str]]:
 def get_urls(plist: list[int])-> list[str]:
     """converts each pmid to a valid URL"""
     url_list = []
+    logging.info(f"{len(plist)} urls to request")
     for p in range(len(plist)):
         prefix = 'https://www.ncbi.nlm.nih.gov/pmc/articles/pmid/'
 #                  https://www.ncbi.nlm.nih.gov/pmc/articles/PMC<PMC_ID>/pdf/
 
         new_url = prefix + plist[p]
+        logging.info(new_url)
         url_list.append(new_url)
-    print(url_list)
     return url_list
 
 
@@ -103,6 +104,7 @@ def get_tables(url:str, output_dir:str, pmid:str) -> None:
     os.makedirs(new_path, exist_ok=True)
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
     
+    logging.info(f"requesting {url} ")
     req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req) as u:
@@ -110,8 +112,10 @@ def get_tables(url:str, output_dir:str, pmid:str) -> None:
             content_url = u.url
     except urllib.error.HTTPError as e:
         print(f"HTTP Error {e.code}: {e.reason}")
+        logging.error(f"HTTP Error {e.code}: {e.reason}")
         return
 
+    logging.info(f"request returned {len(html)} bytes of data")
     # keep track of links already found
     links = list()
 
@@ -140,6 +144,7 @@ def get_tables(url:str, output_dir:str, pmid:str) -> None:
     soup = BeautifulSoup(html, "html.parser")
     for link in soup.find_all('a', href=True):
         href = link['href']
+        logging.info(f"parser found a link with href: {href}")
         if any(href.lower().endswith(x) for x in ['.csv', '.xls', '.xlsx', '.tsv', '.txt']):
             full_url = urljoin(content_url, href)
             # typically the content has two copies of the same link, handle this here
@@ -489,8 +494,8 @@ def main():
             get_upw(doi_data, valid_pmids, pdf_output_path, email=email)
 
         if config['download']:
-            print('Download supplementary data option')
-            print('Working directory: '+os.getcwd())
+            logging.info('Download supplementary data option')
+            logging.info('Working directory: '+os.getcwd())
             supp_output_dir = 'supp_data'
             table_output_path = os.path.join(main_dir, supp_output_dir)
             for u, p in zip(url_data, valid_pmids):

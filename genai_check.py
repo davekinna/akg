@@ -68,7 +68,7 @@ def genai_check(filename:str)->Tuple[bool,str,int,float,float,str]:
     #
     # original (thesis) model was gemini-1.5-flash
     model = genai.GenerativeModel(
-        'gemini-2.0-flash',
+        'gemini-2.5-flash',
         generation_config=generation_config
     )
     # Create the prompt, providing both the instructions and the file content
