@@ -11,18 +11,18 @@ A fully automated installation is not yet in place (see https://github.com/davek
 ```
 git clone https://github.com/davekinna/akg.git
 ```
-This will create a subdirectory 'akg' with the python scripts in. The most recent code version is on the dev branch - so to see this in your environment:
+This will create a subdirectory 'akg' with the python scripts in. The most recent code version is on the linux branch - so to see this in your environment:
 ```
 cd akg
-git checkout dev
+git checkout linux
 ```
 ... and then return to the parent directory (cd ..), the examples below do this to avoid mixing code and data. With the current immature version of the code, you may need to install modules to run the code.
 
 ### Linux quick setup
 From the project root (this directory), run:
 ```
+module load python/v3.11
 bash setup_linux.sh
-source .venv/bin/activate
 ```
 
 This project now includes:
@@ -36,7 +36,6 @@ To use a different location, set VENV_DIR when running setup:
 VENV_DIR=/path/to/venvs/akg bash setup_linux.sh
 source /path/to/venvs/akg/bin/activate
 ```
-
 For faster graph browsing in kg_explorer.py, the loader can also open .hdt files. If you want to keep SPARQL querying over .hdt graphs, install the rdflib-hdt package:
 ```
 pip install rdflib-hdt
