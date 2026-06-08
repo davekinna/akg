@@ -11,43 +11,41 @@ A fully automated installation is not yet in place (see https://github.com/davek
 ```
 git clone https://github.com/davekinna/akg.git
 ```
-This will create a subdirectory 'akg' with the python scripts in. The most recent code version is on the dev branch - so to see this in your environment:
+This will create a subdirectory 'akg' with the python scripts in. This is the "project root". 
+The most recent code version is on the linux branch - so to see this in your environment:
 ```
 cd akg
-git checkout dev
+git checkout linux
 ```
-... and then return to the parent directory (cd ..), the examples below do this to avoid mixing code and data. With the current immature version of the code, you may need to install modules to run the code.
 
 ### Linux quick setup
-From the project root (this directory), run:
+From the project root, run:
 ```
+module load python/v3.11
 bash setup_linux.sh
-source .venv/bin/activate
 ```
-
-This project now includes:
+The linux version of the project includes:
 * requirements.txt (Python dependencies used by scripts/tests)
 * setup_linux.sh (creates/uses .venv and installs dependencies)
 
-By default, the virtual environment is created at .venv inside the project root. This is the recommended default for this repository because it keeps tooling/editor discovery simple and avoids mixing environments across projects.
-
-To use a different location, set VENV_DIR when running setup:
+By default, the virtual environment is created at .venv inside the project root. To use a different location, set VENV_DIR when running setup:
 ```
 VENV_DIR=/path/to/venvs/akg bash setup_linux.sh
-source /path/to/venvs/akg/bin/activate
 ```
 
-For faster graph browsing in kg_explorer.py, the loader can also open .hdt files. If you want to keep SPARQL querying over .hdt graphs, install the rdflib-hdt package:
+To actually start the virtual environment from the project root, run:
 ```
-pip install rdflib-hdt
-```
-If you only need fast triple browsing, the simpler hdt package is enough:
-```
-pip install hdt
-```
-With rdflib-hdt installed, kg_explorer.py will load .hdt files through an rdflib store and keep SPARQL support. Without it, the explorer falls back to read-only HDT browsing and disables SPARQL for .hdt loads.
+source .venv/bin/activate.csh
 
-To emit .hdt files from bin_edam.py, use --output-format hdt or --output-format both. HDT writing currently relies on the external rdf2hdt executable from the HDT toolchain.
+## the bash/zsh equivalent is also available:
+# source .venv/bin/activate
+# if you chose a non-default location for the venv, use that instead:
+# source /path/to/venvs/akg/bin/activate.csh
+
+```
+
+Then return to the parent directory (cd ..), the examples below do this to avoid mixing code and data.
+
 
 ## Workflow for using the code
 This section is an outline of the project and available code.  I assume here you are running from the directory level above the source code (which is in directory akg).
