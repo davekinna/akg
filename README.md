@@ -58,7 +58,7 @@ to run the code and identify the available options.  In the following examples m
 
 Steps in creating and using a graph are as follows:
 
-0. Create a working directory for your downloaded data, derived data and graph files. In the examples I've named my working directories with the date, for example, 'd2025-08-12'. I refer to this here as <top_level>
+0. Create a working directory for your downloaded data, derived data and graph files. In the examples I've named my working directories with the date, for example, 'd2025-08-12'. I refer to this here as <top_level>  
 0.1 update akg/.env with your API key from NCBI/Entrez
 
 1. finding relevant articles
@@ -73,9 +73,9 @@ python akg\processing.py -i <top_level> -s -d
 ```
 
 The data files are output to <top_level>/supp_data.  The next level of directories under supp_data is named by the numeric pubmed ID value. 
-So, the files are/should be downloaded to <top_level>/supp_data/<PMID>.
+So, the files are/should be downloaded to <top_level>/supp_data/\<PMID\>.
 
-If they are not downloaded, look in processing.log, which will show you the publication locations as web addresses. Visit these with your browser, download the supplementary files, and put them into <top_level>/supp_data/<PMID> with their current filenames.
+If they are not downloaded, look in processing.log, which will show you the publication locations as web addresses. Visit these with your browser, download the supplementary files, and put them into <top_level>/supp_data/\<PMID\> with their current filenames.
 
 Excluding downloaded data at this point based on PMID can be achieved by deleting it or moving it to a different location. The subsequent steps only work on files under the given top level directory.
 
@@ -86,16 +86,13 @@ python akg\data_split.py -i <top_level>
 This will have created a file in the data directories, alongside the source data that was downloaded, called split_*tablename*.csv.
 These are now the working data files. data_split.py also will have created the first version of the tracking file called (by default) akg_tracking.xlsx, and a log file called data_split.log.
 
-3. checking each supplementary data file for relevant expression info and generating derived data set files, one for each table of data 
-    - data_convert.py
-
-Use this as follows:
+5. check each supplementary data file for relevant expression info and generate derived data set files, one for each table of data 
 ```
 python akg\data_convert.py -i <top_level>
 ```
 The derived dataset files are named expdata_<filename>.csv, where <filename> is the data file that it came from. These are in the same directory as the datafile itself.
 
-3.1 Use AI to suggest which of the derived dataset files are suitable for subsequent processing.
+5.1 Use AI to suggest which of the derived dataset files are suitable for subsequent processing.
     - genai_check.py
 
 Use this as follows:
