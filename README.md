@@ -111,8 +111,7 @@ python akg\genai_check.py -e -i <top_level>
 ```
 
 5.2. Inspection and manual exclusion of data. 
-data_convert.py will create an excel spreadsheet 'tracking' file (by default named 'akg_tracking.xlsx'), with one line per downloaded supplementary data file, and then one line per derived dataset file.
-The derived dataset file lines include the name of the data file they were generated from.
+The derived dataset file lines in akg_tracking.xlsx include the name of the data file they were generated from.
 
 Inspect the tracking file for dataset lines where the 'log fold change' column has been incorrectly identified and exclude them from subsequent processing. You can do this by setting the 'excl' column to TRUE (save and close the spreadsheet before moving to the next step).  In this case, for reporting and tracking integrity it is also useful to set the 'manual' column to TRUE and put some explanatory text in the 'manualreason' column of the spreadsheet which is there for this purpose.
 
@@ -141,11 +140,11 @@ python akg\csv_data_cleaning.py -i <top_level>
     - create_rdf_triples.py
    This generates the graph triples from the clean csv files. Currently implemented is the per-file option, which generates a .nt file for each csv file:
 ```
-python akg\csv_data_cleaning.py -f -i <top_level>
+python akg\create_rdf_triples.py -f -i <top_level>
 ```
 
 8. Combine graphs:
-I recommend first doing this for each PMID. The following combines all graphs for one PMID, with output to file <top_level>/graph/combined_31097668.nt
+I recommend first combining the triple files for each PMID. The following does this for 31097668, with output to file <top_level>/graph/combined_31097668.nt
 ```
 python akg\combine_graphs.py -i <top_level> -p 31097668
 ```
