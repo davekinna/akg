@@ -60,15 +60,18 @@ Steps in creating and using a graph are as follows:
 
 0. Create a working directory for your downloaded data, derived data and graph files. In the examples I've named my working directories with the date, for example, 'd2025-08-12'. I refer to this here as <top_level>
 
-2. finding relevant articles
-    - processing.py
-
-3. retrieving article metadata, abstracts and supplementary data files
+1. finding relevant articles
     - processing.py
 
 Use this as follows:
 ```
-python akg\processing.py -o <top_level>
+python akg\processing.py -i <top_level> -s
+```
+
+3. retrieving article metadata, abstracts and supplementary data files
+    - processing.py
+```
+python akg\processing.py -i <top_level> -s -d
 ```
 
 The data files are output to <top_level>/supp_data.  The next level of directories under supp_data is named by the numeric pubmed ID value. 
@@ -76,7 +79,7 @@ So, the files are/should be downloaded to <top_level>/supp_data/<PMID>.
 
 Excluding downloaded data at this point based on PMID can be achieved by deleting it or moving it to a different location. The subsequent steps only work on files under the given top level directory.
 
-3. Split the supplementary data files if necessary and generate derived data set files, one CSV file for each table of data. These are called split_*.csv.
+4. Split the supplementary data files if necessary and generate derived data set files, one CSV file for each table of data. These are called split_*.csv.
     - data_split.py
 
 Use this as follows:
