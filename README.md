@@ -92,7 +92,7 @@ python akg\data_convert.py -i <top_level>
 ```
 The derived dataset files are named expdata_<filename>.csv, where <filename> is the data file that it came from. These are in the same directory as the datafile itself.
 
-5.1 Use AI to suggest which of the derived dataset files are suitable for subsequent processing.
+5.1. Use AI to suggest which of the derived dataset files are suitable for subsequent processing.
     - genai_check.py
 
 Use this as follows:
@@ -104,7 +104,7 @@ This needs to be run after data_convert.py has been run. It looks for the derive
 python akg\genai_check.py -e -i <top_level>
 ```
 
-4. Inspection and manual exclusion of data. 
+5.2. Inspection and manual exclusion of data. 
 data_convert.py will create an excel spreadsheet 'tracking' file (by default named 'akg_tracking.xlsx'), with one line per downloaded supplementary data file, and then one line per derived dataset file.
 The derived dataset file lines include the name of the data file they were generated from.
 
@@ -124,7 +124,6 @@ The code that matches the log fold change column is a simple text match as follo
 An example of where one would manually exclude the answer given by this algorithm was where a column headed 'ontology' is wrongly identified because this word contains the substring 'log'.
 
 6. data cleaning
-    - csv_data_cleaning.py 
 This implements a simple cleaning algorithm on the data. It outputs a file clean_expdata_<filename>.csv for each dataset.
 
 Use this as follows:
@@ -132,18 +131,29 @@ Use this as follows:
 python akg\csv_data_cleaning.py -i <top_level>
 ```
 
-6. mapping to rdf triples
+7. mapping to rdf triples
     - create_rdf_triples.py
-    - graph_cleanup.py
+   This generates the graph triples from the clean csv files. Currently implemented is the per-file option, which generates a .nt file for each csv file:
+```
+python akg\csv_data_cleaning.py -f -i <top_level>
+```
 
-7. data testing and analysis (see analysis directory)
-    - general_tests.ipynb
-    - graphanalysis.ipynb
-    - usecase1.ipynb
-    - usecase2.ipynb
-    - usecase2.ipynb
+8. Combine graphs:
+I recommend first doing this for each PMID. The following combines all graphs for one PMID, with output to file <top_level>/graph/combined_31097668.nt
+```
+python akg\combine_graphs.py -i <top_level> -p 31097668
+```
+You should then be able to combine these further with, for example
+```
+python akg\combine_graphs.py -i <top_level>  -o bigger_graph.nt graph/combined_31097668.nt graph/combined_31097668.nt
+```
 
-Retrieved article outputs are stored in the 'data' directory, the rdf graph is stored in 'cleaned_maingraph.nt' .
+9. Cleanup graph
+Ensures any values are given correct datatype (double or data), and that any blank values are removed.
+
+```
+python akg\graph_cleanup.py -i <top_level> -n bigger_graph.nt -u clean_combined.nt
+```
 
 ## Developer notes
 * Work on the 'dev' branch, merge back into the main branch for stable versions
