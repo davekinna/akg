@@ -67,6 +67,12 @@ python akg\processing.py -i <top_level> -s -e <your-entrez-email>
 ```
 First time around, consider using '-c 1' to stop the search after one hit!
 
+The default query is: 
+```
+((autism[title] or ASD[title]) AND brain AND transcriptomic AND expression AND rna NOT review[title] NOT Review[Publication Type])
+```
+... use the -t option to supply an alternative
+
 2. retrieving article metadata, abstracts and supplementary data files
 ```
 python akg\processing.py -i <top_level> -s -d
