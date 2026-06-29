@@ -19,6 +19,6 @@ xlrd
 # Developer/test dependency
 pytest
 
-# Optional HDT extras for kg_explorer.py and bin_edam.py workflows
-# rdflib-hdt
-# hdt
+# Optional dependencies for enhanced functionality
+# Playwright: enables fallback browser-based scraping for pmc_downloader.py when OA tarball is unavailable
+# playwright
