@@ -28,6 +28,7 @@ Optional Fallback Feature (Requires GUI):
 from __future__ import annotations
 
 import tarfile
+import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -343,6 +344,32 @@ def scrape_supplements_with_playwright(
             all_links = page.locator("a").all()
             supplement_links: dict[str, str] = {}  # text -> url
 
+            def normalize_supp_url(raw_url: str) -> str:
+                """Normalize known PMC supplement URL patterns to stable /pmc/articles/PMC.../bin/... links."""
+                parsed = urlparse(raw_url)
+                path = parsed.path
+
+                # /articles/instance/<id>/bin/<file> -> /pmc/articles/PMC<id>/bin/<file>
+                path = re.sub(
+                    r"^/articles/instance/(\d+)/bin/",
+                    lambda m: f"/pmc/articles/PMC{m.group(1)}/bin/",
+                    path,
+                )
+
+                # /articles/<id>/bin/<file> -> /pmc/articles/PMC<id>/bin/<file>
+                path = re.sub(
+                    r"^/articles/(\d+)/bin/",
+                    lambda m: f"/pmc/articles/PMC{m.group(1)}/bin/",
+                    path,
+                )
+
+                # Last-resort: if still /articles/instance/ and includes /bin/, force to current PMCID.
+                if "/articles/instance/" in path and "/bin/" in path:
+                    bin_tail = path.split("/bin/", 1)[1]
+                    path = f"/pmc/articles/{pmcid}/bin/{bin_tail}"
+
+                return parsed._replace(path=path).geturl()
+
             for elem in all_links:
                 href = elem.get_attribute("href")
                 text = elem.text_content().strip() if elem.text_content() else ""
@@ -372,19 +399,34 @@ def scrape_supplements_with_playwright(
                 # Skip hash/anchor links
                 if href.startswith("#"):
                     continue
+
+                # Make absolute URL if relative
+                abs_url = urljoin(article_url, href)
+                parsed_abs = urlparse(abs_url)
+                url_l = abs_url.lower()
+                text_l = text.lower()
+
+                # Keep only PMC/NCBI links and avoid unrelated external/footer links.
+                if parsed_abs.netloc not in {"www.ncbi.nlm.nih.gov", "pmc.ncbi.nlm.nih.gov"}:
+                    continue
+
+                # Skip known non-download patterns.
+                if "open in a new tab" in text_l or "/figure/" in parsed_abs.path.lower():
+                    continue
                 
-                # Prefer file links (has extension) or contains supplement keywords
-                has_file_ext = any(href.lower().endswith(ext) for ext in [
+                # Prefer true supplement/download links.
+                has_file_ext = any(url_l.endswith(ext) for ext in [
                     ".xlsx", ".xls", ".csv", ".tsv", ".zip", ".gz", ".tar",
-                    ".docx", ".doc", ".txt", ".png", ".jpg", ".jpeg", ".gif"
+                    ".docx", ".doc", ".txt", ".png", ".jpg", ".jpeg", ".gif", ".pdf"
                 ])
                 
-                has_supp_keyword = any(keyword in href.lower() or keyword in text.lower() 
+                has_supp_keyword = any(keyword in url_l or keyword in text_l 
                                       for keyword in ["supp", "supplement", "additional", "moesm", "data", "fig", "table"])
+
+                has_bin_path = "/bin/" in parsed_abs.path.lower()
                 
-                if has_file_ext or has_supp_keyword:
-                    # Make absolute URL if relative
-                    abs_url = urljoin(article_url, href)
+                if has_file_ext or (has_supp_keyword and has_bin_path) or has_bin_path:
+                    abs_url = normalize_supp_url(abs_url)
                     # Use cleaned text as key
                     clean_text = " ".join(text.split())[:80]  # Normalize whitespace
                     if clean_text and clean_text not in supplement_links:
@@ -403,9 +445,9 @@ def scrape_supplements_with_playwright(
                     # Try the original URL first
                     resp = session.get(url, timeout=60)
                     
-                    # If we get 404, try an alternative URL pattern (remove /instance/ if present)
-                    if resp.status_code == 404 and "/instance/" in url:
-                        alt_url = url.replace("/articles/instance/", "/pmc/articles/")
+                    # If we get 404, retry with normalized PMC bin URL.
+                    if resp.status_code == 404:
+                        alt_url = normalize_supp_url(url)
                         print(f"  [Retry] Original URL failed, trying alternative: {alt_url[:60]}...")
                         resp = session.get(alt_url, timeout=60)
                     
