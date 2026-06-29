@@ -468,17 +468,25 @@ def scrape_supplements_with_playwright(
 
                 parsed = urlparse(primary_url)
                 path = parsed.path
+                article_id = pmcid.removeprefix("PMC")
+                bin_tail = path.split("/bin/", 1)[1] if "/bin/" in path else ""
 
                 # Try both NCBI hosts because redirect behavior differs by environment.
                 for host in ("www.ncbi.nlm.nih.gov", "pmc.ncbi.nlm.nih.gov"):
                     add(parsed._replace(netloc=host).geturl())
                     add(urlparse(normalize_supp_url(parsed._replace(netloc=host).geturl())).geturl())
 
-                # Force explicit /pmc/articles/PMCID/bin/... variant when /bin/ filename exists.
-                if "/bin/" in path:
-                    bin_tail = path.split("/bin/", 1)[1]
+                # Force explicit path variants when /bin/ filename exists.
+                if bin_tail:
                     for host in ("www.ncbi.nlm.nih.gov", "pmc.ncbi.nlm.nih.gov"):
+                        # /pmc/articles/PMC.../bin/... form
                         add(f"https://{host}/pmc/articles/{pmcid}/bin/{bin_tail}")
+                        # /articles/PMC.../bin/... form
+                        add(f"https://{host}/articles/{pmcid}/bin/{bin_tail}")
+                        # /articles/<id>/bin/... form
+                        add(f"https://{host}/articles/{article_id}/bin/{bin_tail}")
+                        # /articles/instance/<id>/bin/... form
+                        add(f"https://{host}/articles/instance/{article_id}/bin/{bin_tail}")
 
                 return candidates
 
@@ -489,6 +497,7 @@ def scrape_supplements_with_playwright(
                     final_url = url
                     last_error: Exception | None = None
                     candidate_urls = build_candidate_urls(url)
+                    print(f"  [Debug] Trying {len(candidate_urls)} candidate URL(s) for: {text}")
 
                     # First pass: requests session.
                     for idx, candidate in enumerate(candidate_urls):
