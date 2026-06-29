@@ -407,8 +407,8 @@ def scrape_supplements_with_playwright(
                 url_l = abs_url.lower()
                 text_l = text.lower()
 
-                # Keep only PMC/NCBI links and avoid unrelated external/footer links.
-                if parsed_abs.netloc not in {"www.ncbi.nlm.nih.gov", "pmc.ncbi.nlm.nih.gov"}:
+                # Skip obvious external noise links.
+                if any(noisy in parsed_abs.netloc.lower() for noisy in ["google.com", "scholar.google", "x.com", "twitter.com"]):
                     continue
 
                 # Skip known non-download patterns.
@@ -429,9 +429,16 @@ def scrape_supplements_with_playwright(
                                       for keyword in ["supp", "supplement", "additional", "moesm", "data", "fig", "table"])
 
                 has_bin_path = "/bin/" in parsed_abs.path.lower()
+                is_ncbi_host = parsed_abs.netloc in {"www.ncbi.nlm.nih.gov", "pmc.ncbi.nlm.nih.gov"}
                 
-                if has_file_ext or (has_supp_keyword and has_bin_path) or has_bin_path:
-                    abs_url = normalize_supp_url(abs_url)
+                # Accept either:
+                # - NCBI bin links (normalized), or
+                # - external direct file/supplement links from publisher domains.
+                if (is_ncbi_host and (has_file_ext or (has_supp_keyword and has_bin_path) or has_bin_path)) or (
+                    not is_ncbi_host and (has_file_ext or has_supp_keyword)
+                ):
+                    if is_ncbi_host:
+                        abs_url = normalize_supp_url(abs_url)
                     # Use cleaned text as key
                     clean_text = " ".join(text.split())[:80]  # Normalize whitespace
                     if clean_text and clean_text not in supplement_links:
