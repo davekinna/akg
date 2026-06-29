@@ -38,11 +38,11 @@ import requests
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
     HAS_PLAYWRIGHT = True
-    _PLAYWRIGHT_IMPORT_MSG = "✓ Playwright available"
+    _PLAYWRIGHT_IMPORT_MSG = "[OK] Playwright available"
 except ImportError as e:
     HAS_PLAYWRIGHT = False
     PlaywrightTimeoutError = None
-    _PLAYWRIGHT_IMPORT_MSG = f"✗ Playwright not available: {e}"
+    _PLAYWRIGHT_IMPORT_MSG = f"[X] Playwright not available: {e}"
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -395,7 +395,7 @@ def scrape_supplements_with_playwright(
 
             print(f"[Fallback] Found {len(supplement_links)} supplement link(s):")
             for text, url in supplement_links.items():
-                print(f"  - {text[:60]} → {url[:60]}...")
+                print(f"  - {text[:60]} -> {url[:60]}...")
 
             # Download each supplement
             for text, url in supplement_links.items():
@@ -428,11 +428,11 @@ def scrape_supplements_with_playwright(
                     dest_path = output_dir / filename
                     dest_path.write_bytes(resp.content)
                     downloaded.append(dest_path)
-                    print(f"  ✓ Downloaded: {filename}")
+                    print(f"  [OK] Downloaded: {filename}")
 
                 except Exception as exc:
                     skipped.append(f"{text} ({exc})")
-                    print(f"  ✗ Failed: {text}: {exc}")
+                    print(f"  [X] Failed: {text}: {exc}")
 
         finally:
             browser.close()
