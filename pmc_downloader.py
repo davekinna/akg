@@ -372,7 +372,8 @@ def scrape_supplements_with_playwright(
 
             for elem in all_links:
                 href = elem.get_attribute("href")
-                text = elem.text_content().strip() if elem.text_content() else ""
+                text_content = elem.text_content()
+                text = text_content.strip() if text_content else ""
                 
                 if not href or not text:
                     continue
@@ -413,6 +414,10 @@ def scrape_supplements_with_playwright(
                 # Skip known non-download patterns.
                 if "open in a new tab" in text_l or "/figure/" in parsed_abs.path.lower():
                     continue
+
+                # Skip the main article PDF entry; we only want supplements/datasets here.
+                if "/pdf/" in parsed_abs.path.lower() and "supp" not in text_l:
+                    continue
                 
                 # Prefer true supplement/download links.
                 has_file_ext = any(url_l.endswith(ext) for ext in [
@@ -439,22 +444,86 @@ def scrape_supplements_with_playwright(
             for text, url in supplement_links.items():
                 print(f"  - {text[:60]} -> {url[:60]}...")
 
+            def build_candidate_urls(primary_url: str) -> list[str]:
+                """Generate host/path variants for supplement download retries."""
+                candidates: list[str] = []
+
+                def add(u: str) -> None:
+                    if u and u not in candidates:
+                        candidates.append(u)
+
+                add(primary_url)
+                add(normalize_supp_url(primary_url))
+
+                parsed = urlparse(primary_url)
+                path = parsed.path
+
+                # Try both NCBI hosts because redirect behavior differs by environment.
+                for host in ("www.ncbi.nlm.nih.gov", "pmc.ncbi.nlm.nih.gov"):
+                    add(parsed._replace(netloc=host).geturl())
+                    add(urlparse(normalize_supp_url(parsed._replace(netloc=host).geturl())).geturl())
+
+                # Force explicit /pmc/articles/PMCID/bin/... variant when /bin/ filename exists.
+                if "/bin/" in path:
+                    bin_tail = path.split("/bin/", 1)[1]
+                    for host in ("www.ncbi.nlm.nih.gov", "pmc.ncbi.nlm.nih.gov"):
+                        add(f"https://{host}/pmc/articles/{pmcid}/bin/{bin_tail}")
+
+                return candidates
+
             # Download each supplement
             for text, url in supplement_links.items():
                 try:
-                    # Try the original URL first
-                    resp = session.get(url, timeout=60)
-                    
-                    # If we get 404, retry with normalized PMC bin URL.
-                    if resp.status_code == 404:
-                        alt_url = normalize_supp_url(url)
-                        print(f"  [Retry] Original URL failed, trying alternative: {alt_url[:60]}...")
-                        resp = session.get(alt_url, timeout=60)
-                    
-                    resp.raise_for_status()
+                    content: bytes | None = None
+                    final_url = url
+                    last_error: Exception | None = None
+                    candidate_urls = build_candidate_urls(url)
+
+                    # First pass: requests session.
+                    for idx, candidate in enumerate(candidate_urls):
+                        if idx > 0:
+                            print(f"  [Retry] Trying alternative: {candidate[:60]}...")
+                        try:
+                            resp = session.get(candidate, timeout=60)
+                            if 200 <= resp.status_code < 300 and resp.content:
+                                content = resp.content
+                                final_url = str(resp.url)
+                                break
+                            last_error = requests.HTTPError(
+                                f"HTTP {resp.status_code} for {candidate}"
+                            )
+                        except Exception as req_exc:
+                            last_error = req_exc
+
+                    # Second pass: browser-context request (shares bot-check/browser state).
+                    if content is None:
+                        for idx, candidate in enumerate(candidate_urls):
+                            if idx == 0:
+                                print("  [Retry] Trying browser-session download...")
+                            try:
+                                pw_resp = page.context.request.get(
+                                    candidate,
+                                    timeout=60000,
+                                    fail_on_status_code=False,
+                                    headers={"referer": article_url},
+                                )
+                                if pw_resp.ok:
+                                    body = pw_resp.body()
+                                    if body:
+                                        content = body
+                                        final_url = pw_resp.url
+                                        break
+                                last_error = requests.HTTPError(
+                                    f"HTTP {pw_resp.status} for {candidate} (browser session)"
+                                )
+                            except Exception as pw_exc:
+                                last_error = pw_exc
+
+                    if content is None:
+                        raise last_error or RuntimeError(f"Unable to download supplement: {url}")
 
                     # Extract filename from URL or use text
-                    parsed = urlparse(resp.url)  # Use final URL after redirects
+                    parsed = urlparse(final_url)  # Use final URL after redirects
                     filename = Path(parsed.path).name
                     
                     if not filename or filename.endswith("/"):
@@ -468,7 +537,7 @@ def scrape_supplements_with_playwright(
                         filename = text_clean + ext if ext else text_clean
 
                     dest_path = output_dir / filename
-                    dest_path.write_bytes(resp.content)
+                    dest_path.write_bytes(content)
                     downloaded.append(dest_path)
                     print(f"  [OK] Downloaded: {filename}")
 
