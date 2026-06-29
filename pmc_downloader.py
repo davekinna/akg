@@ -418,11 +418,15 @@ def scrape_supplements_with_playwright(
                 # Skip the main article PDF entry; we only want supplements/datasets here.
                 if "/pdf/" in parsed_abs.path.lower() and "supp" not in text_l:
                     continue
+
+                # Skip PDF supplement links in fallback mode (user only wants data files).
+                if parsed_abs.path.lower().endswith(".pdf"):
+                    continue
                 
                 # Prefer true supplement/download links.
                 has_file_ext = any(url_l.endswith(ext) for ext in [
                     ".xlsx", ".xls", ".csv", ".tsv", ".zip", ".gz", ".tar",
-                    ".docx", ".doc", ".txt", ".png", ".jpg", ".jpeg", ".gif", ".pdf"
+                    ".docx", ".doc", ".txt", ".png", ".jpg", ".jpeg", ".gif"
                 ])
                 
                 has_supp_keyword = any(keyword in url_l or keyword in text_l 
