@@ -27,6 +27,7 @@ Optional Fallback Feature (Requires GUI):
 
 from __future__ import annotations
 
+import logging
 import tarfile
 import re
 import xml.etree.ElementTree as ET
@@ -316,9 +317,9 @@ def scrape_supplements_with_playwright(
     downloaded: list[Path] = []
     skipped: list[str] = []
 
-    print(f"\n[Fallback] Opening article page in visible browser: {article_url}")
-    print("[Fallback] Browser window will open. If you see a bot check, please complete it.")
-    print("[Fallback] Once the page is fully loaded, press ENTER in this terminal to continue.\n")
+    logging.info("[Fallback] Opening article page in visible browser: %s", article_url)
+    logging.info("[Fallback] Browser window will open. If you see a bot check, please complete it.")
+    logging.info("[Fallback] Once the page is fully loaded, press ENTER in this terminal to continue.")
 
     with sync_playwright() as p:
         # Launch with headless=False to show the browser window
@@ -332,13 +333,13 @@ def scrape_supplements_with_playwright(
             # Wait longer for any dynamic content and bot checks to complete
             page.wait_for_timeout(3000)
 
-            # Prompt user to complete bot checks and press Enter
+            # Prompt user in the console (not via logging) before scraping.
             input("[Waiting] Press ENTER when you've completed any bot checks and the page is ready: ")
 
             # After user confirms, wait a bit more for any post-verification content
             page.wait_for_timeout(2000)
 
-            print("[Fallback] Scanning page for supplementary file links...")
+            logging.info("[Fallback] Scanning page for supplementary file links...")
 
             # Extract all links from the page
             all_links = page.locator("a").all()
@@ -451,9 +452,9 @@ def scrape_supplements_with_playwright(
             if not supplement_links:
                 raise ValueError("No supplementary file links found on the article page.")
 
-            print(f"[Fallback] Found {len(supplement_links)} supplement link(s):")
+            logging.info("[Fallback] Found %d supplement link(s):", len(supplement_links))
             for text, url in supplement_links.items():
-                print(f"  - {text[:60]} -> {url[:60]}...")
+                logging.info("  - %s -> %s...", text[:60], url[:60])
 
             def build_candidate_urls(primary_url: str) -> list[str]:
                 """Generate host/path variants for supplement download retries."""
@@ -497,12 +498,12 @@ def scrape_supplements_with_playwright(
                     final_url = url
                     last_error: Exception | None = None
                     candidate_urls = build_candidate_urls(url)
-                    print(f"  [Debug] Trying {len(candidate_urls)} candidate URL(s) for: {text}")
+                    logging.debug("[Fallback] Trying %d candidate URL(s) for: %s", len(candidate_urls), text)
 
                     # First pass: requests session.
                     for idx, candidate in enumerate(candidate_urls):
                         if idx > 0:
-                            print(f"  [Retry] Trying alternative: {candidate[:60]}...")
+                            logging.debug("[Fallback] Retry with alternative: %s...", candidate[:60])
                         try:
                             resp = session.get(candidate, timeout=60)
                             if 200 <= resp.status_code < 300 and resp.content:
@@ -519,7 +520,7 @@ def scrape_supplements_with_playwright(
                     if content is None:
                         for idx, candidate in enumerate(candidate_urls):
                             if idx == 0:
-                                print("  [Retry] Trying browser-session download...")
+                                logging.debug("[Fallback] Trying browser-session download...")
                             try:
                                 pw_resp = page.context.request.get(
                                     candidate,
@@ -559,11 +560,16 @@ def scrape_supplements_with_playwright(
                     dest_path = output_dir / filename
                     dest_path.write_bytes(content)
                     downloaded.append(dest_path)
-                    print(f"  [OK] Downloaded: {filename}")
+                    logging.info("[Fallback] Downloaded: %s", filename)
+                    print(f"[Fallback] Downloaded: {filename}")
 
                 except Exception as exc:
                     skipped.append(f"{text} ({exc})")
-                    print(f"  [X] Failed: {text}: {exc}")
+                    logging.warning("[Fallback] Failed: %s: %s", text, exc)
+
+            summary_msg = f"[Fallback] Downloads completed: {len(downloaded)} file(s)."
+            logging.info(summary_msg)
+            print(summary_msg)
 
         finally:
             browser.close()
@@ -594,7 +600,7 @@ def download_supplements(pmid: str | int, output_dir: str | Path, use_fallback: 
     
     # Debug: show Playwright status on first call
     if use_fallback:
-        print(f"[Debug] {_PLAYWRIGHT_IMPORT_MSG}")
+        logging.debug("%s", _PLAYWRIGHT_IMPORT_MSG)
 
     with requests.Session() as session:
         session.headers.update(HEADERS)
@@ -619,9 +625,15 @@ def download_supplements(pmid: str | int, output_dir: str | Path, use_fallback: 
                 
             except requests.HTTPError as e:
                 # 404 or other HTTP error on tarball operations - try fallback
-                print(f"[Debug] HTTPError caught: status_code={e.response.status_code}, use_fallback={use_fallback}, HAS_PLAYWRIGHT={HAS_PLAYWRIGHT}")
+                status_code = e.response.status_code if e.response is not None else "unknown"
+                logging.debug(
+                    "HTTPError caught: status_code=%s, use_fallback=%s, HAS_PLAYWRIGHT=%s",
+                    status_code,
+                    use_fallback,
+                    HAS_PLAYWRIGHT,
+                )
                 if use_fallback and e.response.status_code == 404:
-                    print(f"\n[!] OA tarball unavailable (404). Attempting fallback with Playwright scraper...")
+                    logging.warning("OA tarball unavailable (404). Attempting fallback with Playwright scraper...")
                     try:
                         downloaded, skipped = scrape_supplements_with_playwright(
                             result.pmcid, output_dir, session
@@ -649,18 +661,21 @@ def download_supplements(pmid: str | int, output_dir: str | Path, use_fallback: 
 
 if __name__ == "__main__":
     import sys
+    from akg import akg_logging_config
+
+    akg_logging_config("pmc_downloader.log")
 
     if len(sys.argv) != 3:
-        print("Usage: python pmc_downloader.py <PMID> <output_dir>")
+        logging.error("Usage: python pmc_downloader.py <PMID> <output_dir>")
         sys.exit(1)
 
     result = download_supplements(pmid=sys.argv[1], output_dir=sys.argv[2])
-    print(result)
+    logging.info("%s", result)
     if result.downloaded_files:
         for f in result.downloaded_files:
-            print(f"  Saved: {f}")
+            logging.info("  Saved: %s", f)
     if result.skipped_files:
         for s in result.skipped_files:
-            print(f"  Skipped: {s}")
+            logging.info("  Skipped: %s", s)
     if not result.success:
         sys.exit(1)
