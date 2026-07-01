@@ -35,6 +35,7 @@ from metapub.convert import pmid2doi
 from selenium import webdriver
 from urllib.parse import urljoin
 from akg import AKGException, akg_logging_config
+from pmc_downloader import download_supplements
 import configparser
 
 
@@ -80,112 +81,6 @@ def get_dois(plist: list[int]) -> tuple[list[int], list[str]]:
             continue
     logging.info(f"Found {len(doi_list)} DOIs out of {len(plist)} PMIDs")
     return valid_pmids, doi_list
-
-
-def get_urls(plist: list[int])-> list[str]:
-    """converts each pmid to a valid URL"""
-    url_list = []
-    logging.info(f"{len(plist)} urls to request")
-    for p in range(len(plist)):
-        prefix = 'https://www.ncbi.nlm.nih.gov/pmc/articles/pmid/'
-#                  https://www.ncbi.nlm.nih.gov/pmc/articles/PMC<PMC_ID>/pdf/
-
-        new_url = prefix + plist[p]
-        logging.info(new_url)
-        url_list.append(new_url)
-    return url_list
-
-
-def get_tables(url:str, output_dir:str, pmid:str) -> None:
-    """retrieves supplementary files from the article"""
-    new_dir = pmid
-    new_path = os.path.join(output_dir, new_dir)
-    # creates the directory if it doesn't exist
-    os.makedirs(new_path, exist_ok=True)
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-    
-    logging.info(f"requesting {url} ")
-    req = urllib.request.Request(url, headers=headers)
-    try:
-        with urllib.request.urlopen(req) as u:
-            html = u.read().decode('utf-8')
-            content_url = u.url
-    except urllib.error.HTTPError as e:
-        print(f"HTTP Error {e.code}: {e.reason}")
-        logging.error(f"HTTP Error {e.code}: {e.reason}")
-        return
-
-    logging.info(f"request returned {len(html)} bytes of data")
-    # keep track of links already found
-    links = list()
-
-    # to circumvent the bot protection, fire up a real browser
-    # output_sh = os.path.join(output_dir, 'output.sh')
-    # put this script to invoke in the directory above output_dir
-    # which is the main data directory
-    # find the full OS path of output_dir
-    abs_output_dir = os.path.abspath(output_dir)
-    # the directory we want is the one above that
-    main_dir = os.path.dirname(abs_output_dir)
-
-    output_sh = os.path.join(main_dir, 'download.sh')
-    logging.info(f"Writing download script to {output_sh}: this sends download requests to Firefox")
-
-    firefox_path = '"C:\\Program Files\\Mozilla Firefox\\firefox.exe"'
-
-    # will need to write the download target location into the profile
-    profiles = get_firefox_profiles() 
-    # Find the default profile path
-    default_path = next(info['path'] for info in profiles.values() if info['default'])
-
-    # Write or overwrite user.js there
-    #    user_js_path = os.path.join(default_path, "user.js")
-
-    soup = BeautifulSoup(html, "html.parser")
-    for link in soup.find_all('a', href=True):
-        href = link['href']
-        logging.info(f"parser found a link with href: {href}")
-        if any(href.lower().endswith(x) for x in ['.csv', '.xls', '.xlsx', '.tsv', '.txt']):
-            full_url = urljoin(content_url, href)
-            # typically the content has two copies of the same link, handle this here
-            if full_url not in links:
-                links.append(full_url)
-                local_filename = href.rsplit('/', 1)[-1]
-                filename = os.path.join(new_path, local_filename)
-                profile_filename = os.path.join('E:\\firefox_downloads', local_filename)
-
-    # working with profiles not working yet, come back to this. In the meantime copy the file after downloading.
-                # with open(user_js_path, "w", encoding="utf-8") as f:
-                #     f.write('\n'.join([
-                #         'user_pref("browser.download.folderList", 2);',
-                #         r'user_pref("browser.download.dir", new_path);'
-                #     ]))
-                # print(f"Wrote user.js to {user_js_path}")
-
-    # original version skipped the download if it was there already
-                print(f"Downloading {full_url} to {filename}...")
-                with open(output_sh,'a') as osh:
-                    osh.write(firefox_path+ " "+ full_url)
-                    osh.write('\n')
-                    osh.write('sleep 5s\n')
-                    osh.write('\n')
-                    osh.write('cp "'+ profile_filename + '" "' + filename + '"')
-                    osh.write('\n')
-
-                # possibly reinstate this code as an option/backup 
-                # switch to using requests instead of urllib, which was failing
-                # try:
-                #     response = requests.get(full_url, headers=headers)
-                #     response.raise_for_status()
-                #     with open(filename, 'wb') as fw:
-                #         fw.write(response.content)
-                # except requests.exceptions.RequestException as e:
-                #     print(f"Error fetching the page: {e}")
-                #     return None
-
-    # if not os.listdir(new_path):
-    #     print("No files were downloaded.")
-    return
 
 
 def get_pdfs(url):
@@ -484,7 +379,6 @@ def main():
         doi_data = df['doi'].tolist()
         valid_pmids = [str(i) for i in df['pmid'].tolist()]
 
-        url_data = get_urls(valid_pmids)
         if config['pdf']:
             logging.info("PDF download option chosen")
             email  = config['email']
@@ -498,12 +392,35 @@ def main():
             logging.info('Working directory: '+os.getcwd())
             supp_output_dir = 'supp_data'
             table_output_path = os.path.join(main_dir, supp_output_dir)
-            for u, p in zip(url_data, valid_pmids):
+            downloaded_count = 0
+            failed_count = 0
+            for p in valid_pmids:
                 try:
-                    get_tables(u, table_output_path, p)
-                except urllib.error.HTTPError:
-                    pass
-            print("All articles and data retrieved")
+                    result = download_supplements(pmid=p, output_dir=os.path.join(table_output_path, str(p)), use_fallback=True)
+                    if result.success:
+                        downloaded_count += len(result.downloaded_files)
+                        logging.info(
+                            "Supplement download complete for PMID %s: %d file(s)",
+                            p,
+                            len(result.downloaded_files),
+                        )
+                    else:
+                        failed_count += 1
+                        logging.warning(
+                            "Supplement download failed for PMID %s: %s",
+                            p,
+                            result.error,
+                        )
+                except Exception as exc:
+                    failed_count += 1
+                    logging.error("Supplement download raised for PMID %s: %s", p, exc)
+
+            logging.info(
+                "Supplement download summary: %d file(s) downloaded across %d PMID(s), %d PMID(s) failed",
+                downloaded_count,
+                len(valid_pmids),
+                failed_count,
+            )
         return 
     except AKGException as e:
         print(e)
