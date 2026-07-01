@@ -36,11 +36,12 @@ except Exception:
     # PDF-AI controls are disabled later with a user-visible status message.
     pass
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                             QHBoxLayout, QListWidget, QTextEdit, 
+                             QHBoxLayout, QTextEdit, 
                              QLabel, QPushButton, QGridLayout, QTableWidget, 
                              QTableWidgetItem, QHeaderView, QSpinBox, 
                              QCheckBox, QComboBox, QMessageBox, QStyle, QLineEdit,
-                             QFileDialog, QDialog, QTextBrowser)
+                             QFileDialog, QDialog, QTextBrowser, QTreeWidget,
+                             QTreeWidgetItem)
 from PyQt5.QtCore import Qt, pyqtSignal, QPoint, QTimer
 from PyQt5.QtGui import QFont, QColor
 
@@ -287,6 +288,9 @@ class ReviewCheckWindow(QMainWindow):
     review_position_labels: list[QLabel]
     current_article_abstract_text: str
     has_unsaved_changes: bool
+    file_leaf_items_by_index: Dict[int, QTreeWidgetItem]
+    display_order_indices: list[int]
+    display_position_by_index: Dict[int, int]
     
     def __init__(
         self,
@@ -557,15 +561,70 @@ class ReviewCheckWindow(QMainWindow):
         left_layout.setContentsMargins(6, 6, 6, 6)
         left_layout.setSpacing(6)
         left_layout.addWidget(QLabel('Supplementary files to review:'))
+        left_widget.setMinimumWidth(760)
         
-        self.file_list = QListWidget()
+        self.file_list = QTreeWidget()
+        self.file_list.setHeaderLabels(['PMID', 'Source', 'File', 'RowIndex'])
+        self.file_list.setRootIsDecorated(True)
+        self.file_list.setAlternatingRowColors(True)
+        self.file_list.setUniformRowHeights(True)
         self.file_list.itemSelectionChanged.connect(self.on_file_selected)
-        self.file_list.setWordWrap(False)  # Don't wrap file names
         self.file_list.setMinimumHeight(500)  # Show at least ~25 rows
-        
-        for idx, row in self.filtered.iterrows():
-            item_text = f"[{row['pmid']}] {row['file']}"
-            self.file_list.addItem(item_text)
+        self.file_leaf_items_by_index: Dict[int, QTreeWidgetItem] = {}
+        self.display_order_indices: list[int] = []
+        self.display_position_by_index: Dict[int, int] = {}
+
+        sorted_tree_rows: list[Tuple[int, str, str, str]] = []
+        for filtered_idx, (_, row) in enumerate(self.filtered.iterrows()):
+            pmid_text = normalize_pmid(row.get('pmid', ''))
+            raw_source_text = str(row.get('source', '')).strip() if pd.notna(row.get('source', '')) else ''
+            normalized_source_text = raw_source_text.replace('\\', '/')
+            source_text = os.path.basename(normalized_source_text) if normalized_source_text else ''
+            file_text = str(row.get('file', '')).strip()
+            sorted_tree_rows.append((filtered_idx, pmid_text, source_text, file_text))
+
+        sorted_tree_rows.sort(
+            key=lambda row_data: (
+                str(row_data[1]).lower(),
+                str(row_data[2]).lower(),
+                str(row_data[3]).lower(),
+            )
+        )
+
+        pmid_parent_items: dict[str, QTreeWidgetItem] = {}
+        source_parent_items: dict[tuple[str, str], QTreeWidgetItem] = {}
+        for row_data in sorted_tree_rows:
+            filtered_idx = int(row_data[0])
+            pmid_text = str(row_data[1])
+            source_text = str(row_data[2])
+            file_text = str(row_data[3])
+
+            parent_item = pmid_parent_items.get(pmid_text)
+            if parent_item is None:
+                parent_item = QTreeWidgetItem([pmid_text, '', '', ''])
+                self.file_list.addTopLevelItem(parent_item)
+                pmid_parent_items[pmid_text] = parent_item
+
+            source_key = (pmid_text, source_text)
+            source_item = source_parent_items.get(source_key)
+            if source_item is None:
+                source_item = QTreeWidgetItem(['', source_text, '', ''])
+                parent_item.addChild(source_item)
+                source_parent_items[source_key] = source_item
+
+            child_item = QTreeWidgetItem(['', '', file_text, str(filtered_idx)])
+            source_item.addChild(child_item)
+            self.file_leaf_items_by_index[filtered_idx] = child_item
+            self.display_position_by_index[filtered_idx] = len(self.display_order_indices)
+            self.display_order_indices.append(filtered_idx)
+
+        self.file_list.expandAll()
+        self.file_list.resizeColumnToContents(0)
+        self.file_list.resizeColumnToContents(1)
+        self.file_list.resizeColumnToContents(2)
+        self.file_list.setColumnWidth(1, max(1, int(self.file_list.columnWidth(1) * 0.8)))
+        self.file_list.setColumnWidth(2, max(1, int(self.file_list.columnWidth(2) * 0.8)))
+        self.file_list.setColumnHidden(3, True)
         
         left_layout.addWidget(self.file_list)
         content_layout.addWidget(left_widget, 0, 0, 2, 1)
@@ -712,8 +771,8 @@ class ReviewCheckWindow(QMainWindow):
 
         content_layout.addWidget(right_widget, 1, 1)
 
-        content_layout.setColumnStretch(0, 2)
-        content_layout.setColumnStretch(1, 8)
+        content_layout.setColumnStretch(0, 4)
+        content_layout.setColumnStretch(1, 6)
         content_layout.setRowStretch(0, 0)
         content_layout.setRowStretch(1, 1)
 
@@ -721,8 +780,9 @@ class ReviewCheckWindow(QMainWindow):
         main_layout.addWidget(article_panel)
         
         # Load initial display
-        self.update_display(0)
-        self.file_list.setCurrentRow(0)
+        initial_idx = self.display_order_indices[0] if self.display_order_indices else 0
+        self.update_display(initial_idx)
+        self.select_file_row(initial_idx)
         self.adjust_initial_window_size()
         QTimer.singleShot(0, self.adjust_preview_table_height)
         self.start_oa_pdf_prefetch()
@@ -1791,9 +1851,29 @@ class ReviewCheckWindow(QMainWindow):
     
     def on_file_selected(self):
         """Handle file list selection"""
-        current_item = self.file_list.currentRow()
-        if current_item >= 0:
-            self.update_display(current_item)
+        selected_items = self.file_list.selectedItems()
+        if not selected_items:
+            return
+
+        selected_item = selected_items[0]
+        if selected_item.childCount() > 0:
+            return
+
+        current_item = selected_item.text(3)
+        try:
+            idx = int(str(current_item))
+        except (TypeError, ValueError):
+            return
+
+        if 0 <= idx < len(self.filtered):
+            self.update_display(idx)
+
+    def select_file_row(self, idx: int):
+        """Select row in the left tree widget by filtered index."""
+        item = self.file_leaf_items_by_index.get(idx)
+        if item is not None:
+            self.file_list.setCurrentItem(item)
+            self.file_list.scrollToItem(item)
     
     def on_save(self, show_success_dialog: bool = True) -> bool:
         """Save the modified values back to the tracking file."""
@@ -1930,15 +2010,21 @@ class ReviewCheckWindow(QMainWindow):
     
     def on_next(self):
         """Navigate to next entry"""
-        idx = (self.current_index + 1) % len(self.filtered)
-        self.file_list.setCurrentRow(idx)
-        self.update_display(idx)
+        if not self.display_order_indices:
+            return
+        current_pos = self.display_position_by_index.get(self.current_index, 0)
+        next_pos = (current_pos + 1) % len(self.display_order_indices)
+        idx = self.display_order_indices[next_pos]
+        self.select_file_row(idx)
     
     def on_previous(self):
         """Navigate to previous entry"""
-        idx = (self.current_index - 1) % len(self.filtered)
-        self.file_list.setCurrentRow(idx)
-        self.update_display(idx)
+        if not self.display_order_indices:
+            return
+        current_pos = self.display_position_by_index.get(self.current_index, 0)
+        prev_pos = (current_pos - 1) % len(self.display_order_indices)
+        idx = self.display_order_indices[prev_pos]
+        self.select_file_row(idx)
 
 
 def main():
