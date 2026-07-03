@@ -41,9 +41,9 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QTableWidgetItem, QHeaderView, QSpinBox, 
                              QCheckBox, QComboBox, QMessageBox, QStyle, QLineEdit,
                              QFileDialog, QDialog, QTextBrowser, QTreeWidget,
-                             QTreeWidgetItem)
+                             QTreeWidgetItem, QAbstractItemView)
 from PyQt5.QtCore import Qt, pyqtSignal, QPoint, QTimer
-from PyQt5.QtGui import QFont, QColor
+from PyQt5.QtGui import QFont, QColor, QBrush
 
 
 # Preview/table display
@@ -291,6 +291,11 @@ class ReviewCheckWindow(QMainWindow):
     file_leaf_items_by_index: Dict[int, QTreeWidgetItem]
     display_order_indices: list[int]
     display_position_by_index: Dict[int, int]
+    exclude_all_in_source_checkbox: QCheckBox
+    highlighted_file_leaf_item: Optional[QTreeWidgetItem]
+    highlighted_source_item: Optional[QTreeWidgetItem]
+    tracking_file_button: QPushButton
+    refresh_tracking_button: QPushButton
     
     def __init__(
         self,
@@ -318,6 +323,8 @@ class ReviewCheckWindow(QMainWindow):
         self.article_metadata_by_pmid, self.article_metadata_status_message = load_article_metadata_by_pmid(self.article_metadata_file)
         self.google_api_key = os.environ.get('GOOGLE_API_KEY', '').strip()
         self.current_article_abstract_text = ''
+        self.highlighted_file_leaf_item = None
+        self.highlighted_source_item = None
         ui_settings = load_ui_settings(self.settings_file)
         preview_rows_raw = ui_settings.get('preview_visible_rows', DEFAULT_PREVIEW_VISIBLE_ROWS)
         raw_pdf_ai_history = ui_settings.get('pdf_ai_question_history', [])
@@ -424,9 +431,16 @@ class ReviewCheckWindow(QMainWindow):
         dir_label.setContentsMargins(0, 0, 0, 0)
         info_layout.addWidget(dir_label)
         info_layout.addStretch()
-        tracking_label = QLabel(f'Tracking file: {os.path.basename(self.tracking_file)}')
-        tracking_label.setContentsMargins(0, 0, 0, 0)
-        info_layout.addWidget(tracking_label)
+        self.tracking_file_button = QPushButton(f'Tracking file: {os.path.basename(self.tracking_file)}')
+        self.tracking_file_button.setFlat(True)
+        self.tracking_file_button.setStyleSheet('text-align: left; border: none;')
+        self.tracking_file_button.setToolTip('Click to refresh from tracking file')
+        self.tracking_file_button.clicked.connect(self.on_refresh_clicked)
+        info_layout.addWidget(self.tracking_file_button)
+        self.refresh_tracking_button = QPushButton('Refresh')
+        self.refresh_tracking_button.setToolTip('Reload tracking file and refresh review list')
+        self.refresh_tracking_button.clicked.connect(self.on_refresh_clicked)
+        info_layout.addWidget(self.refresh_tracking_button)
         info_layout.addStretch()
         self.total_label = QLabel(f'Total entries: {len(self.filtered)}')
         self.total_label.setContentsMargins(0, 0, 0, 0)
@@ -564,67 +578,18 @@ class ReviewCheckWindow(QMainWindow):
         left_widget.setMinimumWidth(760)
         
         self.file_list = QTreeWidget()
-        self.file_list.setHeaderLabels(['PMID', 'Source', 'File', 'RowIndex'])
+        self.file_list.setHeaderLabels(['PMID', 'Supplementary file', 'Individual table file', 'RowIndex'])
         self.file_list.setRootIsDecorated(True)
         self.file_list.setAlternatingRowColors(True)
         self.file_list.setUniformRowHeights(True)
+        self.file_list.setSelectionBehavior(QAbstractItemView.SelectItems)
+        self.file_list.setAllColumnsShowFocus(False)
+        self.file_list.setStyleSheet(
+            'QTreeWidget::item:selected { background-color: transparent; color: palette(text); }'
+        )
         self.file_list.itemSelectionChanged.connect(self.on_file_selected)
         self.file_list.setMinimumHeight(500)  # Show at least ~25 rows
-        self.file_leaf_items_by_index: Dict[int, QTreeWidgetItem] = {}
-        self.display_order_indices: list[int] = []
-        self.display_position_by_index: Dict[int, int] = {}
-
-        sorted_tree_rows: list[Tuple[int, str, str, str]] = []
-        for filtered_idx, (_, row) in enumerate(self.filtered.iterrows()):
-            pmid_text = normalize_pmid(row.get('pmid', ''))
-            raw_source_text = str(row.get('source', '')).strip() if pd.notna(row.get('source', '')) else ''
-            normalized_source_text = raw_source_text.replace('\\', '/')
-            source_text = os.path.basename(normalized_source_text) if normalized_source_text else ''
-            file_text = str(row.get('file', '')).strip()
-            sorted_tree_rows.append((filtered_idx, pmid_text, source_text, file_text))
-
-        sorted_tree_rows.sort(
-            key=lambda row_data: (
-                str(row_data[1]).lower(),
-                str(row_data[2]).lower(),
-                str(row_data[3]).lower(),
-            )
-        )
-
-        pmid_parent_items: dict[str, QTreeWidgetItem] = {}
-        source_parent_items: dict[tuple[str, str], QTreeWidgetItem] = {}
-        for row_data in sorted_tree_rows:
-            filtered_idx = int(row_data[0])
-            pmid_text = str(row_data[1])
-            source_text = str(row_data[2])
-            file_text = str(row_data[3])
-
-            parent_item = pmid_parent_items.get(pmid_text)
-            if parent_item is None:
-                parent_item = QTreeWidgetItem([pmid_text, '', '', ''])
-                self.file_list.addTopLevelItem(parent_item)
-                pmid_parent_items[pmid_text] = parent_item
-
-            source_key = (pmid_text, source_text)
-            source_item = source_parent_items.get(source_key)
-            if source_item is None:
-                source_item = QTreeWidgetItem(['', source_text, '', ''])
-                parent_item.addChild(source_item)
-                source_parent_items[source_key] = source_item
-
-            child_item = QTreeWidgetItem(['', '', file_text, str(filtered_idx)])
-            source_item.addChild(child_item)
-            self.file_leaf_items_by_index[filtered_idx] = child_item
-            self.display_position_by_index[filtered_idx] = len(self.display_order_indices)
-            self.display_order_indices.append(filtered_idx)
-
-        self.file_list.expandAll()
-        self.file_list.resizeColumnToContents(0)
-        self.file_list.resizeColumnToContents(1)
-        self.file_list.resizeColumnToContents(2)
-        self.file_list.setColumnWidth(1, max(1, int(self.file_list.columnWidth(1) * 0.8)))
-        self.file_list.setColumnWidth(2, max(1, int(self.file_list.columnWidth(2) * 0.8)))
-        self.file_list.setColumnHidden(3, True)
+        self.rebuild_file_tree_from_filtered()
         
         left_layout.addWidget(self.file_list)
         content_layout.addWidget(left_widget, 0, 0, 2, 1)
@@ -735,6 +700,10 @@ class ReviewCheckWindow(QMainWindow):
         self.excl_checkbox = QCheckBox('Exclude this file')
         self.excl_checkbox.stateChanged.connect(self.on_excl_changed)
         metadata_layout.addWidget(self.excl_checkbox, 4, 0, 1, 2, Qt.AlignmentFlag.AlignLeft)
+
+        self.exclude_all_in_source_checkbox = QCheckBox('Exclude all tables in this supplementary file')
+        self.exclude_all_in_source_checkbox.stateChanged.connect(self.on_exclude_all_in_source_changed)
+        metadata_layout.addWidget(self.exclude_all_in_source_checkbox, 5, 0, 1, 5, Qt.AlignmentFlag.AlignLeft)
 
         self.reason_header_label = QLabel('Exclude reason:')
         metadata_layout.addWidget(self.reason_header_label, 4, 3)
@@ -1050,8 +1019,17 @@ class ReviewCheckWindow(QMainWindow):
 
     def on_excl_changed(self, _state):
         """Track unsaved changes when exclude checkbox is changed."""
+        if not self.excl_checkbox.isChecked() and self.exclude_all_in_source_checkbox.isChecked():
+            self.exclude_all_in_source_checkbox.blockSignals(True)
+            self.exclude_all_in_source_checkbox.setChecked(False)
+            self.exclude_all_in_source_checkbox.blockSignals(False)
         self.pending_excl_values[self.current_index] = bool(self.excl_checkbox.isChecked())
         self.update_dirty_state()
+
+    def on_exclude_all_in_source_changed(self, _state):
+        """Require per-file exclusion when bulk supplementary-file exclusion is selected."""
+        if self.exclude_all_in_source_checkbox.isChecked() and not self.excl_checkbox.isChecked():
+            self.excl_checkbox.setChecked(True)
 
     def on_reason_changed(self, value):
         """Track reason text edits for the current row."""
@@ -1853,74 +1831,311 @@ class ReviewCheckWindow(QMainWindow):
         """Handle file list selection"""
         selected_items = self.file_list.selectedItems()
         if not selected_items:
+            self.update_file_tree_highlight(None)
             return
 
+        has_selected_leaf = any(item.childCount() == 0 for item in selected_items)
         selected_item = selected_items[0]
         if selected_item.childCount() > 0:
+            parent_item = selected_item.parent()
+            is_supplementary_node = parent_item is not None and parent_item.parent() is None
+            if is_supplementary_node and not has_selected_leaf and selected_item.childCount() > 0:
+                first_table_item = selected_item.child(0)
+                if first_table_item is not None:
+                    self.file_list.setCurrentItem(first_table_item, 2)
+                    self.file_list.scrollToItem(first_table_item)
+                    return
+            self.update_file_tree_highlight(None)
             return
 
         current_item = selected_item.text(3)
         try:
             idx = int(str(current_item))
         except (TypeError, ValueError):
+            self.update_file_tree_highlight(None)
             return
 
         if 0 <= idx < len(self.filtered):
+            self.exclude_all_in_source_checkbox.blockSignals(True)
+            self.exclude_all_in_source_checkbox.setChecked(False)
+            self.exclude_all_in_source_checkbox.blockSignals(False)
+            self.update_file_tree_highlight(selected_item)
             self.update_display(idx)
+
+    def rebuild_file_tree_from_filtered(self):
+        """Rebuild left file tree from current filtered dataframe."""
+        self.file_leaf_items_by_index = {}
+        self.display_order_indices = []
+        self.display_position_by_index = {}
+        self.file_list.clear()
+        self.update_file_tree_highlight(None)
+
+        sorted_tree_rows: list[Tuple[int, str, str, str]] = []
+        for filtered_idx, (_, row) in enumerate(self.filtered.iterrows()):
+            pmid_text = normalize_pmid(row.get('pmid', ''))
+            raw_source_text = str(row.get('source', '')).strip() if pd.notna(row.get('source', '')) else ''
+            normalized_source_text = raw_source_text.replace('\\', '/')
+            source_text = os.path.basename(normalized_source_text) if normalized_source_text else ''
+            file_text = str(row.get('file', '')).strip()
+            sorted_tree_rows.append((filtered_idx, pmid_text, source_text, file_text))
+
+        sorted_tree_rows.sort(
+            key=lambda row_data: (
+                str(row_data[1]).lower(),
+                str(row_data[2]).lower(),
+                str(row_data[3]).lower(),
+            )
+        )
+
+        pmid_parent_items: dict[str, QTreeWidgetItem] = {}
+        source_parent_items: dict[tuple[str, str], QTreeWidgetItem] = {}
+        for row_data in sorted_tree_rows:
+            filtered_idx = int(row_data[0])
+            pmid_text = str(row_data[1])
+            source_text = str(row_data[2])
+            file_text = str(row_data[3])
+
+            parent_item = pmid_parent_items.get(pmid_text)
+            if parent_item is None:
+                parent_item = QTreeWidgetItem([pmid_text, '', '', ''])
+                self.file_list.addTopLevelItem(parent_item)
+                pmid_parent_items[pmid_text] = parent_item
+
+            source_key = (pmid_text, source_text)
+            source_item = source_parent_items.get(source_key)
+            if source_item is None:
+                source_item = QTreeWidgetItem(['', source_text, '', ''])
+                parent_item.addChild(source_item)
+                source_parent_items[source_key] = source_item
+
+            child_item = QTreeWidgetItem(['', '', file_text, str(filtered_idx)])
+            source_item.addChild(child_item)
+            self.file_leaf_items_by_index[filtered_idx] = child_item
+            self.display_position_by_index[filtered_idx] = len(self.display_order_indices)
+            self.display_order_indices.append(filtered_idx)
+
+        self.file_list.expandAll()
+        self.file_list.resizeColumnToContents(0)
+        self.file_list.resizeColumnToContents(1)
+        self.file_list.resizeColumnToContents(2)
+        self.file_list.setColumnWidth(1, max(1, int(self.file_list.columnWidth(1))))
+        self.file_list.setColumnWidth(2, max(1, int(self.file_list.columnWidth(2) * 0.8)))
+        self.file_list.setColumnHidden(3, True)
+
+    def refresh_from_tracking_file(self, preserve_selection: bool = True, show_success_dialog: bool = False) -> bool:
+        """Reload tracking file from disk and refresh filtered view/tree."""
+        selection_key: Optional[Tuple[str, str]] = None
+        if preserve_selection and 0 <= self.current_index < len(self.filtered):
+            selected_row = self.filtered.iloc[self.current_index]
+            selection_key = (str(selected_row.get('path', '')), str(selected_row.get('file', '')))
+
+        try:
+            refreshed_df = load_tracking_file(self.tracking_file)
+        except Exception as e:
+            QMessageBox.critical(self, 'Refresh failed', f'Failed to reload tracking file: {e}')
+            return False
+
+        if 'manualreason' not in refreshed_df.columns:
+            refreshed_df['manualreason'] = ''
+        if 'manual' not in refreshed_df.columns:
+            refreshed_df['manual'] = False
+
+        refreshed_filtered = refreshed_df[
+            (refreshed_df['step'] == 1) &
+            (refreshed_df['suitable'] == True) &
+            (refreshed_df['excl'] == False)
+        ].reset_index(drop=True)
+
+        self.tracking_df = refreshed_df
+        self.filtered = refreshed_filtered
+        self.pending_gene_choices = {}
+        self.pending_pval_choices = {}
+        self.pending_lfc_choices = {}
+        self.pending_excl_values = {}
+        self.pending_reason_values = {}
+        self.initial_row_values = {}
+        self.saved_row_values = {}
+        self.has_unsaved_changes = False
+
+        for idx_int in range(len(self.filtered)):
+            row = self.filtered.iloc[idx_int]
+            row_values = {
+                'skip': int(row['skip']) if pd.notna(row['skip']) else 0,
+                'gene': str(row['gene']).strip() if pd.notna(row['gene']) else '',
+                'pval': str(row['pval']).strip() if pd.notna(row['pval']) else '',
+                'lfc': str(row['lfc']).strip() if pd.notna(row['lfc']) else '',
+                'excl': bool(row['excl']) if pd.notna(row['excl']) else False,
+                'manualreason': str(row.get('manualreason', '')).strip() if pd.notna(row.get('manualreason', '')) else ''
+            }
+            self.initial_row_values[idx_int] = {
+                'skip': row_values['skip'],
+                'gene': row_values['gene'],
+                'pval': row_values['pval'],
+                'lfc': row_values['lfc']
+            }
+            self.saved_row_values[idx_int] = row_values
+
+        self.total_label.setText(f'Total entries: {len(self.filtered)}')
+        self.rebuild_file_tree_from_filtered()
+
+        if len(self.filtered) == 0:
+            self.current_index = 0
+            self.preview_header_label.setText('Preview: no entries available after refresh.')
+            self.preview_table.clear()
+            self.preview_table.setRowCount(0)
+            self.preview_table.setColumnCount(0)
+            self.update_review_position_status()
+            if show_success_dialog:
+                QMessageBox.information(self, 'Refreshed', 'Tracking file refreshed. No entries currently match step=1, suitable=TRUE, excl=FALSE.')
+            return True
+
+        target_idx = 0
+        if selection_key is not None:
+            path_value, file_value = selection_key
+            matches = self.filtered[
+                (self.filtered['path'].astype(str) == path_value) &
+                (self.filtered['file'].astype(str) == file_value)
+            ]
+            if not matches.empty:
+                target_idx = int(matches.index[0])
+
+        self.select_file_row(target_idx)
+        if self.file_list.currentItem() is None:
+            self.update_display(target_idx)
+
+        if show_success_dialog:
+            QMessageBox.information(self, 'Refreshed', 'Tracking file reloaded and display refreshed.')
+        return True
+
+    def on_refresh_clicked(self):
+        """Handle tracking-file refresh action from top-row controls."""
+        self.refresh_from_tracking_file(preserve_selection=True, show_success_dialog=True)
 
     def select_file_row(self, idx: int):
         """Select row in the left tree widget by filtered index."""
         item = self.file_leaf_items_by_index.get(idx)
         if item is not None:
-            self.file_list.setCurrentItem(item)
+            self.file_list.setCurrentItem(item, 2)
             self.file_list.scrollToItem(item)
+
+    def clear_file_tree_highlight(self, item: Optional[QTreeWidgetItem], column: int):
+        """Clear a custom background highlight from one tree cell."""
+        if item is None:
+            return
+        item.setBackground(column, QBrush())
+        item.setForeground(column, QBrush())
+        item_font = item.font(column)
+        item_font.setBold(False)
+        item_font.setUnderline(False)
+        item.setFont(column, item_font)
+
+    def update_file_tree_highlight(self, selected_leaf_item: Optional[QTreeWidgetItem]):
+        """Highlight the selected table file cell and its parent supplementary file cell."""
+        self.clear_file_tree_highlight(self.highlighted_file_leaf_item, 2)
+        self.clear_file_tree_highlight(self.highlighted_source_item, 1)
+        self.highlighted_file_leaf_item = None
+        self.highlighted_source_item = None
+
+        if selected_leaf_item is None:
+            return
+
+        source_item = selected_leaf_item.parent()
+        self.highlighted_file_leaf_item = selected_leaf_item
+        self.highlighted_source_item = source_item
+        highlight_bg = QBrush(QColor(196, 224, 255))
+        highlight_fg = QBrush(QColor(0, 45, 110))
+        selected_leaf_item.setBackground(2, highlight_bg)
+        selected_leaf_item.setForeground(2, highlight_fg)
+        leaf_font = selected_leaf_item.font(2)
+        leaf_font.setBold(True)
+        leaf_font.setUnderline(False)
+        selected_leaf_item.setFont(2, leaf_font)
+        if source_item is not None:
+            source_item.setBackground(1, highlight_bg)
+            source_item.setForeground(1, highlight_fg)
+            source_font = source_item.font(1)
+            source_font.setBold(True)
+            source_font.setUnderline(False)
+            source_item.setFont(1, source_font)
     
     def on_save(self, show_success_dialog: bool = True) -> bool:
         """Save the modified values back to the tracking file."""
         try:
             # Get the original index in the unfiltered dataframe
             current_row = self.filtered.iloc[self.current_index]
-            # Find the row in the original dataframe
-            original_idx = self.tracking_df[
-                (self.tracking_df['path'] == current_row['path']) &
-                (self.tracking_df['file'] == current_row['file'])
-            ].index[0]
-            
-            # Update the skip, excl, gene, pval, and lfc values in the tracking dataframe
             excl_checked = self.excl_checkbox.isChecked()
-            self.tracking_df.loc[original_idx, 'skip'] = self.skip_spinbox.value()
-            self.tracking_df.loc[original_idx, 'excl'] = excl_checked
+            exclude_all_in_source = self.exclude_all_in_source_checkbox.isChecked()
             selected_gene = self.gene_choice_combo.currentText().strip()
             selected_pval = self.pval_choice_combo.currentText().strip()
             selected_lfc = self.lfc_choice_combo.currentText().strip()
             selected_reason = self.reason_input.text().strip()
-            self.tracking_df.loc[original_idx, 'gene'] = selected_gene
-            self.tracking_df.loc[original_idx, 'pval'] = selected_pval
-            self.tracking_df.loc[original_idx, 'lfc'] = selected_lfc
-            self.tracking_df.loc[original_idx, 'manualreason'] = selected_reason
-            self.tracking_df.loc[original_idx, 'manual'] = bool(excl_checked)
+            selected_source = str(current_row.get('source', '')).strip() if pd.notna(current_row.get('source', '')) else ''
 
-            # Keep filtered copy in sync for in-session navigation
-            self.filtered.loc[self.current_index, 'skip'] = self.skip_spinbox.value()
-            self.filtered.loc[self.current_index, 'excl'] = self.excl_checkbox.isChecked()
-            self.filtered.loc[self.current_index, 'gene'] = selected_gene
-            self.filtered.loc[self.current_index, 'pval'] = selected_pval
-            self.filtered.loc[self.current_index, 'lfc'] = selected_lfc
-            self.filtered.loc[self.current_index, 'manualreason'] = selected_reason
-            self.pending_gene_choices[self.current_index] = selected_gene
-            self.pending_pval_choices[self.current_index] = selected_pval
-            self.pending_lfc_choices[self.current_index] = selected_lfc
-            self.pending_excl_values[self.current_index] = bool(excl_checked)
-            self.pending_reason_values[self.current_index] = selected_reason
+            if exclude_all_in_source and not selected_source:
+                raise ValueError('Cannot bulk exclude because the selected row has no supplementary file source')
 
-            self.saved_row_values[self.current_index] = {
-                'skip': int(self.skip_spinbox.value()),
-                'excl': bool(self.excl_checkbox.isChecked()),
-                'gene': selected_gene,
-                'pval': selected_pval,
-                'lfc': selected_lfc,
-                'manualreason': selected_reason
-            }
+            # Find affected rows in the original dataframe.
+            original_mask = (
+                (self.tracking_df['path'] == current_row['path']) &
+                (self.tracking_df['file'] == current_row['file'])
+            )
+            if exclude_all_in_source:
+                original_mask = self.tracking_df['source'].fillna('').astype(str).str.strip() == selected_source
+
+            affected_original_indices = self.tracking_df.index[original_mask].tolist()
+            if not affected_original_indices:
+                raise ValueError('No tracking rows matched the selected file or supplementary file source')
+
+            current_original_indices = self.tracking_df.index[
+                (self.tracking_df['path'] == current_row['path']) &
+                (self.tracking_df['file'] == current_row['file'])
+            ].tolist()
+            if not current_original_indices:
+                raise ValueError('The selected file could not be found in the tracking dataframe')
+
+            # Update the tracking dataframe.
+            self.tracking_df.loc[affected_original_indices, 'excl'] = excl_checked
+            self.tracking_df.loc[affected_original_indices, 'manualreason'] = selected_reason
+            self.tracking_df.loc[affected_original_indices, 'manual'] = bool(excl_checked)
+            self.tracking_df.loc[current_original_indices, 'skip'] = self.skip_spinbox.value()
+            self.tracking_df.loc[current_original_indices, 'gene'] = selected_gene
+            self.tracking_df.loc[current_original_indices, 'pval'] = selected_pval
+            self.tracking_df.loc[current_original_indices, 'lfc'] = selected_lfc
+
+            # Keep filtered copy in sync for in-session navigation.
+            affected_filtered_indices = [self.current_index]
+            if exclude_all_in_source:
+                filtered_source_series = self.filtered['source'].fillna('').astype(str).str.strip()
+                affected_filtered_indices = self.filtered.index[filtered_source_series == selected_source].tolist()
+
+            current_filtered_indices = [self.current_index]
+
+            for filtered_idx in affected_filtered_indices:
+                self.filtered.loc[filtered_idx, 'excl'] = excl_checked
+                self.filtered.loc[filtered_idx, 'manualreason'] = selected_reason
+                self.pending_excl_values[filtered_idx] = bool(excl_checked)
+                self.pending_reason_values[filtered_idx] = selected_reason
+
+                saved_row = dict(self.saved_row_values.get(filtered_idx, {}))
+                saved_row['excl'] = bool(excl_checked)
+                saved_row['manualreason'] = selected_reason
+                self.saved_row_values[filtered_idx] = saved_row
+
+            for filtered_idx in current_filtered_indices:
+                self.filtered.loc[filtered_idx, 'skip'] = self.skip_spinbox.value()
+                self.filtered.loc[filtered_idx, 'gene'] = selected_gene
+                self.filtered.loc[filtered_idx, 'pval'] = selected_pval
+                self.filtered.loc[filtered_idx, 'lfc'] = selected_lfc
+                self.pending_gene_choices[filtered_idx] = selected_gene
+                self.pending_pval_choices[filtered_idx] = selected_pval
+                self.pending_lfc_choices[filtered_idx] = selected_lfc
+
+                saved_row = dict(self.saved_row_values.get(filtered_idx, {}))
+                saved_row['skip'] = int(self.skip_spinbox.value())
+                saved_row['gene'] = selected_gene
+                saved_row['pval'] = selected_pval
+                saved_row['lfc'] = selected_lfc
+                self.saved_row_values[filtered_idx] = saved_row
             
             # Save the tracking file
             if self.tracking_file.endswith('.xlsx'):
@@ -1930,16 +2145,23 @@ class ReviewCheckWindow(QMainWindow):
             else:  # CSV
                 self.tracking_df.sort_values(by=['step','pmid','file']).to_csv(
                     self.tracking_file, index=False)
+
+            self.refresh_from_tracking_file(preserve_selection=True, show_success_dialog=False)
             
             # Show confirmation
             from PyQt5.QtWidgets import QMessageBox
             excl_status = 'EXCLUDED' if self.excl_checkbox.isChecked() else 'included'
             if show_success_dialog:
+                affected_count = len(affected_original_indices)
+                scope_text = 'all tables in the supplementary file' if exclude_all_in_source else 'current file'
                 QMessageBox.information(self, 'Success', 
-                    f'Saved: skip={self.skip_spinbox.value()}, excl={excl_status}, '
+                    f'Saved ({scope_text}, {affected_count} row(s)): skip={self.skip_spinbox.value()}, excl={excl_status}, '
                     f'gene={selected_gene or "(blank)"}, pval={selected_pval or "(blank)"}, '
                     f'lfc={selected_lfc or "(blank)"}, '
                     f'exclude reason={selected_reason or "(blank)"}')
+            self.exclude_all_in_source_checkbox.blockSignals(True)
+            self.exclude_all_in_source_checkbox.setChecked(False)
+            self.exclude_all_in_source_checkbox.blockSignals(False)
             self.update_dirty_state()
             return True
             
