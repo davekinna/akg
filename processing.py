@@ -39,6 +39,16 @@ from pmc_downloader import download_supplements
 import configparser
 
 
+def parse_csv_bool(value) -> bool:
+    """Parse booleans from CSV cells that may be strings, numbers, or bools."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    text = str(value).strip().lower()
+    return text in {'1', 'true', 't', 'yes', 'y'}
+
+
 
 def get_search_result(query:str='', email:str='', count:int=30) -> dict:
     """Article search, returning PMIDs for articles matching terms relating to Autism and gene expression"""
@@ -227,6 +237,21 @@ def get_metadata(plist: list[int], dlist: list[str], article_metadata_file:str):
     # add placeholders for the exclusion columns
     df_merged['exclude'] = False
     df_merged['exclude reason'] = ''
+    df_merged['download tried'] = False
+
+    if os.path.isfile(article_metadata_file):
+        try:
+            existing_df = pd.read_csv(article_metadata_file)
+            if 'download tried' in existing_df.columns:
+                existing_download_tried = existing_df[['pmid', 'download tried']].copy()
+                existing_download_tried['download tried'] = existing_download_tried['download tried'].map(parse_csv_bool)
+                existing_download_tried = existing_download_tried.drop_duplicates(subset=['pmid'], keep='last')
+                df_merged = df_merged.merge(existing_download_tried, on='pmid', how='left', suffixes=('', '_existing'))
+                df_merged['download tried'] = df_merged['download tried_existing'].fillna(df_merged['download tried']).map(parse_csv_bool)
+                df_merged.drop(columns=['download tried_existing'], inplace=True)
+        except Exception:
+            # If migration fails, keep default False values and continue.
+            pass
 
     # Export the merged DataFrame to a CSV file
     if os.path.isfile(article_metadata_file):
@@ -258,6 +283,10 @@ def get_metadata_pmid(pmid:str, article_metadata_file:str):
     if os.path.isfile(article_metadata_file):
         logging.info(f"File '{article_metadata_file}' already exists. Updating it.")
         df = pd.read_csv(article_metadata_file)
+        if 'download tried' not in df.columns:
+            df['download tried'] = False
+        else:
+            df['download tried'] = df['download tried'].map(parse_csv_bool)
         # if the metadata for this pmid is already there, overwrite it without deleting the other entries
         if int(pmid) in df['pmid'].values:
             # get the row where pmid matches, and update the fields
@@ -275,7 +304,8 @@ def get_metadata_pmid(pmid:str, article_metadata_file:str):
                                        'doi': [pmid2doi(pmid)],
                                        'abstract': [abstract],
                                        'exclude': [False],
-                                       'exclude reason': ['']})
+                                       'exclude reason': [''],
+                                       'download tried': [False]})
             df = pd.concat([df, new_entry], ignore_index=True)
     else:
         # create a new file with just this one entry
@@ -286,7 +316,8 @@ def get_metadata_pmid(pmid:str, article_metadata_file:str):
                            'abstract': [abstract],
                            'doi': [pmid2doi(pmid)],
                            'exclude': [False],
-                           'exclude reason': ['']})
+                           'exclude reason': [''],
+                           'download tried': [False]})
         logging.info(f"File '{article_metadata_file}' created.")
 
     df.to_csv(article_metadata_file, index=False)
@@ -364,16 +395,46 @@ def main():
         # this is a change of process: always read back the valid_pmids and doi_data from the file so we can skip the search 
         # and metadata retrieval if it's already been done
         # Load CSV
-        df = pd.read_csv(article_metadata_file)
+        metadata_df = pd.read_csv(article_metadata_file)
+        if 'exclude' not in metadata_df.columns:
+            metadata_df['exclude'] = False
+        if 'download tried' not in metadata_df.columns:
+            metadata_df['download tried'] = False
+        else:
+            metadata_df['download tried'] = metadata_df['download tried'].map(parse_csv_bool)
+        metadata_df['exclude'] = metadata_df['exclude'].map(parse_csv_bool)
+        df = metadata_df.copy()
 
         # only work on the entries that haven't been excluded
+        metadata_total = len(df)
+        excluded_count = int(df['exclude'].sum())
+        if excluded_count:
+            logging.info(
+                "Excluding %d metadata row(s) from %s where exclude=True",
+                excluded_count,
+                article_metadata_file,
+            )
         df = df[~df['exclude']]
 
         # further exclude if we're doing pmid only
         if pmid_only:
+            before_pmid_filter = len(df)
             df = df[df['pmid'] == int(pmid)]
+            pmid_excluded_count = before_pmid_filter - len(df)
+            if pmid_excluded_count:
+                logging.info(
+                    "Excluding %d metadata row(s) due to PMID-only filter (target PMID=%s)",
+                    pmid_excluded_count,
+                    pmid,
+                )
             if df.empty:
                 raise AKGException(f"PMID {pmid} not found in metadata file or it has been excluded")
+
+        logging.info(
+            "Metadata filtering complete: %d total row(s), %d retained",
+            metadata_total,
+            len(df),
+        )
 
         # Extract DOIs and PMIDs
         doi_data = df['doi'].tolist()
@@ -394,7 +455,20 @@ def main():
             table_output_path = os.path.join(main_dir, supp_output_dir)
             downloaded_count = 0
             failed_count = 0
-            for p in valid_pmids:
+            attempted_pmids = set()
+
+            download_df = df[~df['download tried']]
+            skipped_tried_count = len(df) - len(download_df)
+            if skipped_tried_count:
+                logging.info(
+                    "Skipping %d PMID(s) because download has already been attempted",
+                    skipped_tried_count,
+                )
+
+            if download_df.empty:
+                logging.info("No supplementary downloads to attempt: all selected PMIDs are marked as download tried")
+
+            for p in [str(i) for i in download_df['pmid'].tolist()]:
                 try:
                     result = download_supplements(pmid=p, output_dir=os.path.join(table_output_path, str(p)), use_fallback=True)
                     if result.success:
@@ -414,11 +488,21 @@ def main():
                 except Exception as exc:
                     failed_count += 1
                     logging.error("Supplement download raised for PMID %s: %s", p, exc)
+                finally:
+                    attempted_pmids.add(p)
+
+            if attempted_pmids:
+                metadata_df.loc[metadata_df['pmid'].astype(str).isin(attempted_pmids), 'download tried'] = True
+                metadata_df.to_csv(article_metadata_file, index=False)
+                logging.info(
+                    "Updated metadata: marked download tried=True for %d PMID(s)",
+                    len(attempted_pmids),
+                )
 
             logging.info(
                 "Supplement download summary: %d file(s) downloaded across %d PMID(s), %d PMID(s) failed",
                 downloaded_count,
-                len(valid_pmids),
+                len(attempted_pmids),
                 failed_count,
             )
         return 

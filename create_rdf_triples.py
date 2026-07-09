@@ -43,9 +43,26 @@ def process_metadata_csv(csv_file_path, graph):
     """
     with open(csv_file_path, 'r') as csvfile:
         reader = csv.DictReader(csvfile)
+
+        def _is_excluded(value: str) -> bool:
+            text = str(value or "").strip().lower()
+            return text in {"1", "true", "t", "yes", "y"}
+
+        skipped_rows = 0
+        processed_rows = 0
         
         for row in reader:
+            if _is_excluded(row.get('exclude', '')):
+                skipped_rows += 1
+                pmid = str(row.get('pmid', '') or '').strip()
+                if pmid:
+                    logging.info("Excluding metadata row for PMID %s where exclude=True", pmid)
+                else:
+                    logging.info("Excluding metadata row with blank PMID where exclude=True")
+                continue
+
             if 'pmid' in row and row['pmid']:
+                processed_rows += 1
                 pmid_uri = PMC[row['pmid']]
                 
                 for column, value in row.items():
@@ -60,6 +77,14 @@ def process_metadata_csv(csv_file_path, graph):
                 for column, value in row.items():
                     if column == 'journal' and value:
                         graph.add((pmid_uri, DCT.publisher, Literal(value)))
+
+        if skipped_rows:
+            logging.info(
+                "Metadata conversion summary for %s: processed %d row(s), excluded %d row(s)",
+                csv_file_path,
+                processed_rows,
+                skipped_rows,
+            )
 
 
 def process_regular_csv(csv_file_path:str, matched_genes, unmatched_genes, graph, graph_file:str, gene_name:str='', pval_name:str='', lfc_name:str='')-> (int,int):

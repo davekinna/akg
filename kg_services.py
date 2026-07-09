@@ -748,7 +748,7 @@ class GraphDataService:
         return contexts
 
     def prepopulate_row_context_cache(self, graph_path: str, input_dir: str = "") -> int:
-        """Load candidate row sidecars into memory and return number of sidecar files visited."""
+        """Load candidate row sidecars into memory and return number of sidecar files loaded."""
         seen_paths: set[str] = set()
         loaded_count = 0
 
@@ -757,6 +757,8 @@ class GraphDataService:
             if normalized in seen_paths:
                 continue
             seen_paths.add(normalized)
+            if not os.path.exists(sidecar_path):
+                continue
             self._load_row_sidecar(sidecar_path)
             loaded_count += 1
 

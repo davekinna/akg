@@ -2091,6 +2091,9 @@ class KGExplorerWindow(QMainWindow):
 
         item = QTableWidgetItem(display)
         item.setData(ITEM_USER_ROLE, raw)
+        bin_info = self._format_bin_metadata([raw])
+        if bin_info:
+            item.setToolTip(bin_info)
         return item
 
     def refresh_network_view(self) -> None:
