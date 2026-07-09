@@ -66,6 +66,8 @@ def process_data_folder(data_folder:str,  tracking_file:str):
             root = row['path']
             file = row['file']
             pmid = row['pmid']
+            source_suitable = bool(row.get('suitable', True))
+            source_suitablereason = str(row.get('suitablereason', ''))
             lfc = row['lfc']
             pval = row['pval']
             gene = row['gene']
@@ -83,7 +85,7 @@ def process_data_folder(data_folder:str,  tracking_file:str):
                         clean_pval = re.sub(r'[\s\-_<>\(\)\[\]\{\}"]', '', pval.lower())
                         clean_gene = re.sub(r'[\s\-_<>\(\)\[\]\{\}"]', '', gene.lower())
                         clean_lfc = re.sub(r'[\s\-_<>\(\)\[\]\{\}"]', '', lfc.lower())
-                        new_entry = tracking_entry(3, root, pmid, new_file_path,   False, True, file_path, False, False, '', 0, clean_pval, clean_gene, clean_lfc, '', 0, 0, False, '')
+                        new_entry = tracking_entry(3, root, pmid, new_file_path,   False, True, file_path, False, False, '', 0, clean_pval, clean_gene, clean_lfc, '', 0, 0, source_suitable, source_suitablereason)
                         tdf = add_to_tracking(tdf, new_entry)
                     df.loc[index,'cleaned'] = True
                 else:

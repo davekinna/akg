@@ -9,12 +9,13 @@ import xlrd
 import csv
 import re
 import argparse
+from typing import Optional
 from akg import AKGException, akg_logging_config, possible_lfc_names
 from tracking import check_tracking_writeable, create_tracking, load_tracking, save_tracking, create_empty_tracking_store, add_to_tracking, tracking_entry
 import sys
 
 
-def process_csv_file(file_path:str, skip_rows:int=0, pval_name:str='', gene_name:str='', lfc_name:str='')->pd.DataFrame:
+def process_csv_file(file_path:str, skip_rows:int=0, pval_name:str='', gene_name:str='', lfc_name:str='', source_suitable:bool=True, source_suitablereason:str='')->pd.DataFrame:
     """loads csv, tsc or txt files and prepares them to be inputs to the AKG
 
         Parameters:
@@ -47,7 +48,7 @@ def process_csv_file(file_path:str, skip_rows:int=0, pval_name:str='', gene_name
                 logging.warning('pd.read_csv detected 1 column only. This is unlikely.')
             if not df.empty:
 #                new_file = process_dataframe(df, file_name, output_dir, file_path, input_delimiter=delim, skip_rows=skip_rows, pval_name=pval_name, gene_name=gene_name, lfc_name=lfc_name)
-                new_file = process_dataframe(df, file_name, output_dir, file_path, input_delimiter=None, skip_rows=skip_rows, pval_name=pval_name, gene_name=gene_name, lfc_name=lfc_name)
+                new_file = process_dataframe(df, file_name, output_dir, file_path, input_delimiter=None, skip_rows=skip_rows, pval_name=pval_name, gene_name=gene_name, lfc_name=lfc_name, source_suitable=source_suitable, source_suitablereason=source_suitablereason)
                 return add_to_tracking(tdf, new_file)
         except Exception as e:
             logging.error(f"Failed to read {file_path} with encoding '{encoding}': {str(e)}")
@@ -91,7 +92,7 @@ def test_lfc_search():
     print(f'log_fold_col:{log_fold_col}')
 
 
-def process_dataframe(df:pd.DataFrame, sheet_name:str, output_dir:str, file_path:str, input_delimiter:str='\t', skip_rows:int=0, pval_name:str='', gene_name:str='', lfc_name:str='')->pd.DataFrame:
+def process_dataframe(df:pd.DataFrame, sheet_name:str, output_dir:str, file_path:str, input_delimiter:Optional[str]='\t', skip_rows:int=0, pval_name:str='', gene_name:str='', lfc_name:str='', source_suitable:bool=True, source_suitablereason:str='')->pd.DataFrame:
     """processes dataframes to assess if the data relates to gene expression - looks for "log fold change" or similar
     in column titles
     """
@@ -99,7 +100,7 @@ def process_dataframe(df:pd.DataFrame, sheet_name:str, output_dir:str, file_path
     tdf = create_empty_tracking_store()
 
     df.columns = df.columns.astype(str)
-    log_fold_col = None
+    log_fold_col = ''
     for col in df.columns:
         if any(phrase in re.sub(r'[_\s-]', '', col.lower()) for phrase in possible_lfc_names):
             log_fold_col = col
@@ -131,13 +132,31 @@ def process_dataframe(df:pd.DataFrame, sheet_name:str, output_dir:str, file_path
             new_filestub = f'expdata_{sheet_name[start_index:]}'
         else:
             new_filestub = f'expdata_{sheet_name}'
-        new_filename = new_filestub+'.csv'
-        output_file = os.path.join(output_dir, new_filename)
+        original_filename = os.path.splitext(os.path.basename(file_path))[0]
+        candidate_names = [
+            f'{new_filestub}.csv',
+            f'{new_filestub}_{original_filename}.csv'
+        ]
+        output_file = ''
+        new_filename = ''
 
-        if os.path.exists(output_file):
-            original_filename = os.path.splitext(os.path.basename(file_path))[0]
-            new_filename = f"{new_filestub}_{original_filename}.csv"
-            output_file = os.path.join(output_dir, new_filename)
+        for candidate_name in candidate_names:
+            candidate_path = os.path.join(output_dir, candidate_name)
+            if not os.path.exists(candidate_path):
+                new_filename = candidate_name
+                output_file = candidate_path
+                break
+
+        if not output_file:
+            suffix = 1
+            while True:
+                candidate_name = f'{new_filestub}_{original_filename}_{suffix}.csv'
+                candidate_path = os.path.join(output_dir, candidate_name)
+                if not os.path.exists(candidate_path):
+                    new_filename = candidate_name
+                    output_file = candidate_path
+                    break
+                suffix += 1
         # the if statement is redundant
         # if input_delimiter == '\t':
         #     df.to_csv(output_file, index=False, sep=',')
@@ -149,7 +168,7 @@ def process_dataframe(df:pd.DataFrame, sheet_name:str, output_dir:str, file_path
         # assume the pmid is the last component of the output dir
         pmid = os.path.basename(output_dir)
         # create a new tracking entry
-        new_entry = tracking_entry(2,output_dir,pmid,new_filename, False, True, file_path, False, False, '', skip_rows, pval_name, gene_name, log_fold_col,'', 0, 0,False,'')
+        new_entry = tracking_entry(2,output_dir,pmid,new_filename, False, True, file_path, False, False, '', skip_rows, pval_name, gene_name, log_fold_col,'', 0, 0,source_suitable,source_suitablereason)
         tdf = add_to_tracking(tdf, new_entry)
     else:
         logging.info(f"Skipped {sheet_name} in {file_path}: No 'log fold change' column found")
@@ -187,10 +206,25 @@ def process_supp_data_folder(data_folder:str, tracking_file_path:str):
             root = row['path']
             filename = row['file']
             file_path = os.path.join(root, filename)
+
+            has_existing_step2 = (((df['step'] == 2) & (df['source'] == file_path)).any() or
+                                  ((tdf['step'] == 2) & (tdf['source'] == file_path)).any())
+            if has_existing_step2:
+                logging.info(f"Skipping file: {file_path} because step 2 rows already exist for this source")
+                continue
+
             # never process files that we wrote out on a previous iteration
             logging.info(f"Processing file: {file_path}")
             if filename.lower().endswith(('.csv')):
-                local_tdf = process_csv_file(file_path, skip_rows=row['skip'], pval_name=row['pval'], gene_name=row['gene'], lfc_name=row['lfc'])
+                local_tdf = process_csv_file(
+                    file_path,
+                    skip_rows=row['skip'],
+                    pval_name=row['pval'],
+                    gene_name=row['gene'],
+                    lfc_name=row['lfc'],
+                    source_suitable=bool(row.get('suitable', True)),
+                    source_suitablereason=str(row.get('suitablereason', ''))
+                )
                 tdf = add_to_tracking(tdf,local_tdf)
             else:
                 logging.info(f'Skipping file: {file_path}, should be a .csv file ')

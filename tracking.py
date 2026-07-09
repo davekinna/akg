@@ -80,7 +80,7 @@ def create_tracking(folder:str, name:str='akg_tracking.xlsx'):
             pmid = os.path.basename(dirpath)
             # assuming a PMID consists of 8 digits
             if re.fullmatch(r'\d{8}',pmid):
-                new = tracking_entry(0,dirpath,pmid,filename,False,False,'',False,False,'', 0, '', '', '','', 0, 0,False,'')
+                new = tracking_entry(0,dirpath,pmid,filename,False,False,'',False,False,'', 0, '', '', '','', 0, 0,True,'')
                 df = add_to_tracking(df,new)
                 
     save_tracking(df, name)

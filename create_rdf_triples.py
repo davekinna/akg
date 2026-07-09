@@ -404,6 +404,8 @@ if __name__ == '__main__':
             gene_name = row['gene']
             pval_name = row['pval']
             lfc_name  = row['lfc']
+            source_suitable = bool(row.get('suitable', True))
+            source_suitablereason = str(row.get('suitablereason', ''))
             file_path = os.path.join(root, file)
             if excl:
                 logging.info(f"Excluding file: {file_path} manual: {row['manual']} : {row['manualreason']}")
@@ -434,7 +436,7 @@ if __name__ == '__main__':
                     # do this inside the loop so that we can keep track of the progress of an aborted run
                     save_tracking(tdf, tracking_file)
                     # Add the new file to the local tracking DataFrame
-                    new_entry = tracking_entry(4, graph_file_dir, pmid, graph_file_name, False, True, file_path, False, False, '', 0, '', '', '', graph_file, 0, 0, False, '')
+                    new_entry = tracking_entry(4, graph_file_dir, pmid, graph_file_name, False, True, file_path, False, False, '', 0, '', '', '', graph_file, 0, 0, source_suitable, source_suitablereason)
 
                     local_tdf = add_to_tracking(local_tdf, new_entry)
 

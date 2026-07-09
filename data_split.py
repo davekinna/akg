@@ -17,7 +17,7 @@ from akg import AKGException, akg_logging_config
 from tracking import check_tracking_writeable, create_tracking, load_tracking, save_tracking, create_empty_tracking_store, add_to_tracking, tracking_entry
 import sys
 
-def process_excel_file(file_path)->pd.DataFrame:
+def process_excel_file(file_path, source_suitable:bool=True, source_suitablereason:str='')->pd.DataFrame:
     """loads excel files into dataframes
     """
     # tracking DataFrame
@@ -29,7 +29,7 @@ def process_excel_file(file_path)->pd.DataFrame:
         
         for sheet_name in wb.sheetnames:
             df = pd.read_excel(file_path, sheet_name=sheet_name)
-            new_file = process_dataframe(df, sheet_name, output_dir, file_path)
+            new_file = process_dataframe(df, sheet_name, output_dir, file_path, source_suitable=source_suitable, source_suitablereason=source_suitablereason)
             tdf = add_to_tracking(tdf, new_file)
 
     except Exception as e:
@@ -37,7 +37,7 @@ def process_excel_file(file_path)->pd.DataFrame:
 
     return tdf
 
-def process_old_file(file_path)->pd.DataFrame:
+def process_old_file(file_path, source_suitable:bool=True, source_suitablereason:str='')->pd.DataFrame:
     """loads older-style excel files (.xls) into dataframes
     """
     # tracking DataFrame
@@ -55,7 +55,7 @@ def process_old_file(file_path)->pd.DataFrame:
             ]
             df = pd.DataFrame(data, columns=headers)
             
-            new_file = process_dataframe(df, sheet.name, output_dir, file_path)
+            new_file = process_dataframe(df, sheet.name, output_dir, file_path, source_suitable=source_suitable, source_suitablereason=source_suitablereason)
             tdf = add_to_tracking(tdf, new_file)
 
     except Exception as e:
@@ -63,7 +63,7 @@ def process_old_file(file_path)->pd.DataFrame:
 
     return tdf
 
-def process_csv_file(file_path:str)->pd.DataFrame:
+def process_csv_file(file_path:str, source_suitable:bool=True, source_suitablereason:str='')->pd.DataFrame:
     """loads csv, tsc or txt files and prepares them to be inputs to the AKG
 
         Parameters:
@@ -87,7 +87,7 @@ def process_csv_file(file_path:str)->pd.DataFrame:
             try:
                 df = pd.read_csv(file_path, delimiter=delim, encoding=encoding, on_bad_lines='warn')
                 if not df.empty:
-                    new_file = process_dataframe(df, file_name, output_dir, file_path, input_delimiter=delim)
+                    new_file = process_dataframe(df, file_name, output_dir, file_path, input_delimiter=delim, source_suitable=source_suitable, source_suitablereason=source_suitablereason)
                     return add_to_tracking(tdf, new_file)
             except Exception as e:
                 logging.error(f"Failed to read {file_path} with delimiter '{delim}' and encoding '{encoding}': {str(e)}")
@@ -104,7 +104,7 @@ def process_csv_file(file_path:str)->pd.DataFrame:
     return tdf
 
 
-def process_dataframe(df, sheet_name, output_dir, file_path, input_delimiter='\t')->pd.DataFrame:
+def process_dataframe(df, sheet_name, output_dir, file_path, input_delimiter='\t', source_suitable:bool=True, source_suitablereason:str='')->pd.DataFrame:
     """processes dataframes to assess if the data relates to gene expression - looks for "log fold change" or similar
     in column titles
     """
@@ -128,13 +128,31 @@ def process_dataframe(df, sheet_name, output_dir, file_path, input_delimiter='\t
     for old, new in replacement_chars.items():
         sheet_name = sheet_name.replace(old, new)
     new_filestub = f'split_{sheet_name}'
-    new_filename = new_filestub+'.csv'
-    output_file = os.path.join(output_dir, new_filename)
+    original_filename = os.path.splitext(os.path.basename(file_path))[0]
+    candidate_names = [
+        f'{new_filestub}.csv',
+        f'{new_filestub}_{original_filename}.csv'
+    ]
+    output_file = ''
+    new_filename = ''
 
-    if os.path.exists(output_file):
-        original_filename = os.path.splitext(os.path.basename(file_path))[0]
-        new_filename = f"{new_filestub}_{original_filename}.csv"
-        output_file = os.path.join(output_dir, new_filename)
+    for candidate_name in candidate_names:
+        candidate_path = os.path.join(output_dir, candidate_name)
+        if not os.path.exists(candidate_path):
+            new_filename = candidate_name
+            output_file = candidate_path
+            break
+
+    if not output_file:
+        suffix = 1
+        while True:
+            candidate_name = f'{new_filestub}_{original_filename}_{suffix}.csv'
+            candidate_path = os.path.join(output_dir, candidate_name)
+            if not os.path.exists(candidate_path):
+                new_filename = candidate_name
+                output_file = candidate_path
+                break
+            suffix += 1
 
     if input_delimiter == '\t':
         df.to_csv(output_file, index=False, sep=',')
@@ -145,7 +163,7 @@ def process_dataframe(df, sheet_name, output_dir, file_path, input_delimiter='\t
     # assume the pmid is the last component of the output dir
     pmid = os.path.basename(output_dir)
     # create a new tracking entry
-    new_entry = tracking_entry(1,output_dir,pmid,new_filename, False, True, file_path, False, False, '', 0, '', '', '','', 0, 0,False,'')
+    new_entry = tracking_entry(1,output_dir,pmid,new_filename, False, True, file_path, False, False, '', 0, '', '', '','', 0, 0,source_suitable,source_suitablereason)
 
     tdf = add_to_tracking(tdf, new_entry)
 
@@ -181,18 +199,27 @@ def process_supp_data_folder(data_folder:str, tracking_file_path:str ):
         if row['step'] == 0 and not row['excl']:
             root = row['path']
             file = row['file']
+            source_suitable = bool(row.get('suitable', True))
+            source_suitablereason = str(row.get('suitablereason', ''))
             file_path = os.path.join(root, file)
+
+            has_existing_step1 = (((df['step'] == 1) & (df['source'] == file_path)).any() or
+                                  ((tdf['step'] == 1) & (tdf['source'] == file_path)).any())
+            if has_existing_step1:
+                logging.info(f"Skipping file: {file_path} because step 1 rows already exist for this source")
+                continue
+
             # never process files that we wrote out on a previous iteration
             if file.lower().startswith('expdata_') or file.lower().startswith('split_'):
                 logging.info(f"Skipping file: {file_path}")
                 continue
             logging.info(f"Processing file: {file_path}")
             if file.lower().endswith('.xlsx'):
-                local_tdf = process_excel_file(file_path)
+                local_tdf = process_excel_file(file_path, source_suitable, source_suitablereason)
             elif file.lower().endswith('.xls'):
-                local_tdf = process_old_file(file_path)
+                local_tdf = process_old_file(file_path, source_suitable, source_suitablereason)
             elif file.lower().endswith(('.csv', '.tsv', '.txt')):
-                local_tdf = process_csv_file(file_path)
+                local_tdf = process_csv_file(file_path, source_suitable, source_suitablereason)
             tdf = add_to_tracking(tdf,local_tdf)
             # flag the source data as excluded, just for completeness.
             # see the check above. This means that if you rerun data_split, the same file will not be processed twice unless you
