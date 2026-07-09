@@ -73,6 +73,8 @@ The default query is:
 ```
 ... use the -t option to supply an alternative
 
+This will create a metadata file in the working directory, "asd_article_metadata.csv" with details of the articles that the search found in. There is one line of this per article found. If you don't want to continue with a particular article, you can either *delete* its line from this file (so that it is no longer used for the next steps), or you can set the value in the 'exclude' column to TRUE. The 'exclude reason' column might be useful to retain a record of decisions made.  This exclusion is per-article: the tracking file can be used later to exclude individual tables of data.
+
 2. retrieving article metadata, abstracts and supplementary data files
 ```
 python akg\processing.py -i <top_level> -s -d
