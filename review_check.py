@@ -2074,17 +2074,51 @@ class ReviewCheckWindow(QMainWindow):
             if exclude_all_in_source and not selected_source:
                 raise ValueError('Cannot bulk exclude because the selected row has no supplementary file source')
 
-            # Find affected rows in the original dataframe.
-            original_mask = (
-                (self.tracking_df['path'] == current_row['path']) &
-                (self.tracking_df['file'] == current_row['file'])
-            )
-            if exclude_all_in_source:
-                original_mask = self.tracking_df['source'].fillna('').astype(str).str.strip() == selected_source
+            # Collect exclusion/reason updates from all pending rows.
+            excl_reason_updates: Dict[int, Tuple[bool, str]] = {}
+            pending_rows = set(self.pending_excl_values.keys()) | set(self.pending_reason_values.keys())
+            for idx in pending_rows:
+                if idx < 0 or idx >= len(self.filtered):
+                    continue
+                saved_row = self.saved_row_values.get(idx, {})
+                row = self.filtered.iloc[idx]
+                row_excl_default = bool(saved_row.get('excl', bool(row.get('excl', False))))
+                row_reason_default = str(saved_row.get('manualreason', row.get('manualreason', '') or '')).strip()
+                row_excl = bool(self.pending_excl_values.get(idx, row_excl_default))
+                row_reason = str(self.pending_reason_values.get(idx, row_reason_default)).strip()
+                excl_reason_updates[idx] = (row_excl, row_reason)
 
-            affected_original_indices = self.tracking_df.index[original_mask].tolist()
+            # Always include current row UI state.
+            excl_reason_updates[self.current_index] = (bool(excl_checked), selected_reason)
+
+            # Bulk override for all rows in the same supplementary source.
+            if exclude_all_in_source:
+                filtered_source_series = self.filtered['source'].fillna('').astype(str).str.strip()
+                bulk_indices = self.filtered.index[filtered_source_series == selected_source].tolist()
+                for idx in bulk_indices:
+                    excl_reason_updates[int(idx)] = (bool(excl_checked), selected_reason)
+
+            if not excl_reason_updates:
+                raise ValueError('No pending exclusion/reason changes to save')
+
+            # Apply exclusion/reason updates to tracking dataframe.
+            affected_original_indices: set[int] = set()
+            for filtered_idx, (row_excl, row_reason) in excl_reason_updates.items():
+                row = self.filtered.iloc[filtered_idx]
+                row_mask = (
+                    (self.tracking_df['path'] == row['path']) &
+                    (self.tracking_df['file'] == row['file'])
+                )
+                row_original_indices = self.tracking_df.index[row_mask].tolist()
+                if not row_original_indices:
+                    continue
+                self.tracking_df.loc[row_original_indices, 'excl'] = bool(row_excl)
+                self.tracking_df.loc[row_original_indices, 'manualreason'] = row_reason
+                self.tracking_df.loc[row_original_indices, 'manual'] = bool(row_excl)
+                affected_original_indices.update(int(i) for i in row_original_indices)
+
             if not affected_original_indices:
-                raise ValueError('No tracking rows matched the selected file or supplementary file source')
+                raise ValueError('No tracking rows matched pending exclusion/reason updates')
 
             current_original_indices = self.tracking_df.index[
                 (self.tracking_df['path'] == current_row['path']) &
@@ -2094,31 +2128,26 @@ class ReviewCheckWindow(QMainWindow):
                 raise ValueError('The selected file could not be found in the tracking dataframe')
 
             # Update the tracking dataframe.
-            self.tracking_df.loc[affected_original_indices, 'excl'] = excl_checked
-            self.tracking_df.loc[affected_original_indices, 'manualreason'] = selected_reason
-            self.tracking_df.loc[affected_original_indices, 'manual'] = bool(excl_checked)
             self.tracking_df.loc[current_original_indices, 'skip'] = self.skip_spinbox.value()
             self.tracking_df.loc[current_original_indices, 'gene'] = selected_gene
             self.tracking_df.loc[current_original_indices, 'pval'] = selected_pval
             self.tracking_df.loc[current_original_indices, 'lfc'] = selected_lfc
 
             # Keep filtered copy in sync for in-session navigation.
-            affected_filtered_indices = [self.current_index]
-            if exclude_all_in_source:
-                filtered_source_series = self.filtered['source'].fillna('').astype(str).str.strip()
-                affected_filtered_indices = self.filtered.index[filtered_source_series == selected_source].tolist()
+            affected_filtered_indices = list(excl_reason_updates.keys())
 
             current_filtered_indices = [self.current_index]
 
             for filtered_idx in affected_filtered_indices:
-                self.filtered.loc[filtered_idx, 'excl'] = excl_checked
-                self.filtered.loc[filtered_idx, 'manualreason'] = selected_reason
-                self.pending_excl_values[filtered_idx] = bool(excl_checked)
-                self.pending_reason_values[filtered_idx] = selected_reason
+                row_excl, row_reason = excl_reason_updates[filtered_idx]
+                self.filtered.loc[filtered_idx, 'excl'] = bool(row_excl)
+                self.filtered.loc[filtered_idx, 'manualreason'] = row_reason
+                self.pending_excl_values[filtered_idx] = bool(row_excl)
+                self.pending_reason_values[filtered_idx] = row_reason
 
                 saved_row = dict(self.saved_row_values.get(filtered_idx, {}))
-                saved_row['excl'] = bool(excl_checked)
-                saved_row['manualreason'] = selected_reason
+                saved_row['excl'] = bool(row_excl)
+                saved_row['manualreason'] = row_reason
                 self.saved_row_values[filtered_idx] = saved_row
 
             for filtered_idx in current_filtered_indices:
@@ -2149,11 +2178,15 @@ class ReviewCheckWindow(QMainWindow):
             self.refresh_from_tracking_file(preserve_selection=True, show_success_dialog=False)
             
             # Show confirmation
-            from PyQt5.QtWidgets import QMessageBox
             excl_status = 'EXCLUDED' if self.excl_checkbox.isChecked() else 'included'
             if show_success_dialog:
                 affected_count = len(affected_original_indices)
-                scope_text = 'all tables in the supplementary file' if exclude_all_in_source else 'current file'
+                if exclude_all_in_source:
+                    scope_text = 'all tables in the supplementary file (plus any other pending excludes)'
+                elif len(excl_reason_updates) > 1:
+                    scope_text = 'all pending excluded files'
+                else:
+                    scope_text = 'current file'
                 QMessageBox.information(self, 'Success', 
                     f'Saved ({scope_text}, {affected_count} row(s)): skip={self.skip_spinbox.value()}, excl={excl_status}, '
                     f'gene={selected_gene or "(blank)"}, pval={selected_pval or "(blank)"}, '
