@@ -142,6 +142,7 @@ def process_dataframe(df, sheet_name, output_dir, file_path, input_delimiter='\t
             new_filename = candidate_name
             output_file = candidate_path
             break
+        logging.info(f"Skipping output filename because it already exists: {candidate_path}")
 
     if not output_file:
         suffix = 1
@@ -152,6 +153,7 @@ def process_dataframe(df, sheet_name, output_dir, file_path, input_delimiter='\t
                 new_filename = candidate_name
                 output_file = candidate_path
                 break
+            logging.info(f"Skipping output filename because it already exists: {candidate_path}")
             suffix += 1
 
     if input_delimiter == '\t':
@@ -196,35 +198,41 @@ def process_supp_data_folder(data_folder:str, tracking_file_path:str ):
 # TODO: remove loop iteration, do sthg more pythonic
     for index, row in df.iterrows():
         # data_split only works on step 0 files, the raw data that was downloaded
-        if row['step'] == 0 and not row['excl']:
-            root = row['path']
-            file = row['file']
-            source_suitable = bool(row.get('suitable', True))
-            source_suitablereason = str(row.get('suitablereason', ''))
-            file_path = os.path.join(root, file)
+        if row['step'] != 0:
+            continue
 
-            has_existing_step1 = (((df['step'] == 1) & (df['source'] == file_path)).any() or
-                                  ((tdf['step'] == 1) & (tdf['source'] == file_path)).any())
-            if has_existing_step1:
-                logging.info(f"Skipping file: {file_path} because step 1 rows already exist for this source")
-                continue
+        root = row['path']
+        file = row['file']
+        source_suitable = bool(row.get('suitable', True))
+        source_suitablereason = str(row.get('suitablereason', ''))
+        file_path = os.path.join(root, file)
 
-            # never process files that we wrote out on a previous iteration
-            if file.lower().startswith('expdata_') or file.lower().startswith('split_'):
-                logging.info(f"Skipping file: {file_path}")
-                continue
-            logging.info(f"Processing file: {file_path}")
-            if file.lower().endswith('.xlsx'):
-                local_tdf = process_excel_file(file_path, source_suitable, source_suitablereason)
-            elif file.lower().endswith('.xls'):
-                local_tdf = process_old_file(file_path, source_suitable, source_suitablereason)
-            elif file.lower().endswith(('.csv', '.tsv', '.txt')):
-                local_tdf = process_csv_file(file_path, source_suitable, source_suitablereason)
-            tdf = add_to_tracking(tdf,local_tdf)
-            # flag the source data as excluded, just for completeness.
-            # see the check above. This means that if you rerun data_split, the same file will not be processed twice unless you
-            # change the 'excl' flag back to False.
-            df.loc[int(index),'excl'] = True
+        if row['excl']:
+            logging.info(f"Skipping file: {file_path} because step 0 row is marked excluded")
+            continue
+
+        has_existing_step1 = (((df['step'] == 1) & (df['source'] == file_path)).any() or
+                              ((tdf['step'] == 1) & (tdf['source'] == file_path)).any())
+        if has_existing_step1:
+            logging.info(f"Skipping file: {file_path} because step 1 rows already exist for this source")
+            continue
+
+        # never process files that we wrote out on a previous iteration
+        if file.lower().startswith('expdata_') or file.lower().startswith('split_'):
+            logging.info(f"Skipping file: {file_path}")
+            continue
+        logging.info(f"Processing file: {file_path}")
+        if file.lower().endswith('.xlsx'):
+            local_tdf = process_excel_file(file_path, source_suitable, source_suitablereason)
+        elif file.lower().endswith('.xls'):
+            local_tdf = process_old_file(file_path, source_suitable, source_suitablereason)
+        elif file.lower().endswith(('.csv', '.tsv', '.txt')):
+            local_tdf = process_csv_file(file_path, source_suitable, source_suitablereason)
+        tdf = add_to_tracking(tdf,local_tdf)
+        # flag the source data as excluded, just for completeness.
+        # see the check above. This means that if you rerun data_split, the same file will not be processed twice unless you
+        # change the 'excl' flag back to False.
+        df.loc[int(index),'excl'] = True
     logging.info(f'Finished processing files in {data_folder}, found {len(tdf)} new files to add to tracking')
 
     # now the loop has finished add the accumulated tracking info into the main one

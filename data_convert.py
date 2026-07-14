@@ -202,33 +202,39 @@ def process_supp_data_folder(data_folder:str, tracking_file_path:str):
 # TODO: remove loop iteration, do sthg more pythonic
     for index, row in df.iterrows():
         # data_convert only works on step 1 files, the raw data that was downloaded and then split
-        if row['step'] == 1 and not row['excl']:
-            root = row['path']
-            filename = row['file']
-            file_path = os.path.join(root, filename)
+        if row['step'] != 1:
+            continue
 
-            has_existing_step2 = (((df['step'] == 2) & (df['source'] == file_path)).any() or
-                                  ((tdf['step'] == 2) & (tdf['source'] == file_path)).any())
-            if has_existing_step2:
-                logging.info(f"Skipping file: {file_path} because step 2 rows already exist for this source")
-                continue
+        root = row['path']
+        filename = row['file']
+        file_path = os.path.join(root, filename)
 
-            # never process files that we wrote out on a previous iteration
-            logging.info(f"Processing file: {file_path}")
-            if filename.lower().endswith(('.csv')):
-                local_tdf = process_csv_file(
-                    file_path,
-                    skip_rows=row['skip'],
-                    pval_name=row['pval'],
-                    gene_name=row['gene'],
-                    lfc_name=row['lfc'],
-                    source_suitable=bool(row.get('suitable', True)),
-                    source_suitablereason=str(row.get('suitablereason', ''))
-                )
-                tdf = add_to_tracking(tdf,local_tdf)
-            else:
-                logging.info(f'Skipping file: {file_path}, should be a .csv file ')
-                continue
+        if row['excl']:
+            logging.info(f"Skipping file: {file_path} because step 1 row is marked excluded")
+            continue
+
+        has_existing_step2 = (((df['step'] == 2) & (df['source'] == file_path)).any() or
+                              ((tdf['step'] == 2) & (tdf['source'] == file_path)).any())
+        if has_existing_step2:
+            logging.info(f"Skipping file: {file_path} because step 2 rows already exist for this source")
+            continue
+
+        # never process files that we wrote out on a previous iteration
+        logging.info(f"Processing file: {file_path}")
+        if filename.lower().endswith(('.csv')):
+            local_tdf = process_csv_file(
+                file_path,
+                skip_rows=row['skip'],
+                pval_name=row['pval'],
+                gene_name=row['gene'],
+                lfc_name=row['lfc'],
+                source_suitable=bool(row.get('suitable', True)),
+                source_suitablereason=str(row.get('suitablereason', ''))
+            )
+            tdf = add_to_tracking(tdf,local_tdf)
+        else:
+            logging.info(f'Skipping file: {file_path}, should be a .csv file ')
+            continue
     logging.info(f'Finished processing files in {data_folder}, found {len(tdf)} new files to add to tracking')
 
     # now the loop has finished add the accumulated tracking info into the main one
