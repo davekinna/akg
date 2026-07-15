@@ -49,6 +49,31 @@ def parse_csv_bool(value) -> bool:
     return text in {'1', 'true', 't', 'yes', 'y'}
 
 
+def read_existing_pmids(article_metadata_file: str) -> set[str]:
+    """Return known PMIDs from an existing metadata CSV, or an empty set."""
+    if not os.path.isfile(article_metadata_file):
+        return set()
+
+    try:
+        existing_df = pd.read_csv(article_metadata_file)
+    except Exception:
+        return set()
+
+    if 'pmid' not in existing_df.columns:
+        return set()
+
+    pmids = existing_df['pmid'].dropna().astype(str).str.strip()
+    normalized_pmids = set()
+    for p in pmids:
+        if not p:
+            continue
+        if p.endswith('.0') and p[:-2].isdigit():
+            normalized_pmids.add(p[:-2])
+        else:
+            normalized_pmids.add(p)
+    return normalized_pmids
+
+
 
 def get_search_result(query:str='', email:str='', count:int=30) -> dict:
     """Article search, returning PMIDs for articles matching terms relating to Autism and gene expression"""
@@ -239,24 +264,44 @@ def get_metadata(plist: list[int], dlist: list[str], article_metadata_file:str):
     df_merged['exclude reason'] = ''
     df_merged['download tried'] = False
 
+    # Export merged metadata to CSV. If the file already exists, preserve existing
+    # rows and append only new PMIDs.
     if os.path.isfile(article_metadata_file):
         try:
             existing_df = pd.read_csv(article_metadata_file)
-            if 'download tried' in existing_df.columns:
-                existing_download_tried = existing_df[['pmid', 'download tried']].copy()
-                existing_download_tried['download tried'] = existing_download_tried['download tried'].map(parse_csv_bool)
-                existing_download_tried = existing_download_tried.drop_duplicates(subset=['pmid'], keep='last')
-                df_merged = df_merged.merge(existing_download_tried, on='pmid', how='left', suffixes=('', '_existing'))
-                df_merged['download tried'] = df_merged['download tried_existing'].fillna(df_merged['download tried']).map(parse_csv_bool)
-                df_merged.drop(columns=['download tried_existing'], inplace=True)
         except Exception:
-            # If migration fails, keep default False values and continue.
-            pass
+            existing_df = pd.DataFrame()
 
-    # Export the merged DataFrame to a CSV file
-    if os.path.isfile(article_metadata_file):
-        logging.info(f"File '{article_metadata_file}' already exists. Overwriting it.")
-        df_merged.to_csv(article_metadata_file, index=False)
+        if 'pmid' not in existing_df.columns:
+            existing_df['pmid'] = pd.Series(dtype='object')
+        if 'exclude' not in existing_df.columns:
+            existing_df['exclude'] = False
+        if 'exclude reason' not in existing_df.columns:
+            existing_df['exclude reason'] = ''
+        if 'download tried' not in existing_df.columns:
+            existing_df['download tried'] = False
+        else:
+            existing_df['download tried'] = existing_df['download tried'].map(parse_csv_bool)
+
+        if not existing_df.empty:
+            existing_df = existing_df.drop_duplicates(subset=['pmid'], keep='first')
+
+        combined_df = pd.concat([existing_df, df_merged], ignore_index=True, sort=False)
+        if not combined_df.empty:
+            combined_df = combined_df.drop_duplicates(subset=['pmid'], keep='first')
+
+        combined_df['exclude'] = combined_df['exclude'].fillna(False).map(parse_csv_bool)
+        combined_df['exclude reason'] = combined_df['exclude reason'].fillna('')
+        combined_df['download tried'] = combined_df['download tried'].fillna(False).map(parse_csv_bool)
+
+        combined_df.to_csv(article_metadata_file, index=False)
+        logging.info(
+            "Updated metadata file '%s': %d existing row(s), %d new row(s), %d total row(s)",
+            article_metadata_file,
+            len(existing_df),
+            len(df_merged),
+            len(combined_df),
+        )
     else:
         df_merged.to_csv(article_metadata_file, index=False)
         logging.info(f"File '{article_metadata_file}' created.")
@@ -381,11 +426,24 @@ def main():
                 search_data = get_search_result(config['search_term'], config['email'], int(config['count']))
                 # get_pmids just extracts the pmids from the structure returned
                 pmid_data = get_pmids(search_data)
-                # get_dois uses Entrez to extract the associated doi resource names and is working
-                valid_pmids, doi_data = get_dois(pmid_data)
-                # get_metadata is working fine. It retrieves a lot of metadata separately into DataFrames, 
-                # then merges this into a master DataFrame and saves it as a csv file
-                get_metadata(valid_pmids, doi_data, article_metadata_file)
+                known_pmids = read_existing_pmids(article_metadata_file)
+                pmid_data_to_fetch = [p for p in pmid_data if str(p) not in known_pmids]
+
+                if known_pmids:
+                    logging.info(
+                        "Search returned %d PMID(s); %d already present in metadata and skipped; %d new PMID(s) to fetch",
+                        len(pmid_data),
+                        len(pmid_data) - len(pmid_data_to_fetch),
+                        len(pmid_data_to_fetch),
+                    )
+
+                if pmid_data_to_fetch:
+                    # get_dois uses Entrez to extract the associated doi resource names and is working
+                    valid_pmids, doi_data = get_dois(pmid_data_to_fetch)
+                    # get_metadata retrieves article metadata and appends any new PMIDs to the metadata CSV
+                    get_metadata(valid_pmids, doi_data, article_metadata_file)
+                else:
+                    logging.info("No new PMIDs discovered during search; metadata file left unchanged")
         else:
             if not os.path.exists(article_metadata_file):
                 error_message = '-s option not chosen and no metadata file exists'
