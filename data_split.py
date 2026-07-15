@@ -13,7 +13,7 @@ import xlrd
 import csv
 import re
 import argparse
-from akg import AKGException, akg_logging_config
+from akg import AKGException, akg_logging_config, detect_tracking_columns
 from tracking import check_tracking_writeable, create_tracking, load_tracking, save_tracking, create_empty_tracking_store, add_to_tracking, tracking_entry
 import sys
 
@@ -162,10 +162,13 @@ def process_dataframe(df, sheet_name, output_dir, file_path, input_delimiter='\t
         df.to_csv(output_file, index=False)
     logging.info(f"Saved {sheet_name} as CSV: {output_file}")
 
+    # Infer initial column choices from headers so step=1 rows have a first-pass guess.
+    gene_name, pval_name, lfc_name = detect_tracking_columns(df.columns.astype(str).tolist())
+
     # assume the pmid is the last component of the output dir
     pmid = os.path.basename(output_dir)
     # create a new tracking entry
-    new_entry = tracking_entry(1,output_dir,pmid,new_filename, False, True, file_path, False, False, '', 0, '', '', '','', 0, 0,source_suitable,source_suitablereason)
+    new_entry = tracking_entry(1,output_dir,pmid,new_filename, False, True, file_path, False, False, '', 0, pval_name, gene_name, lfc_name,'', 0, 0,source_suitable,source_suitablereason)
 
     tdf = add_to_tracking(tdf, new_entry)
 

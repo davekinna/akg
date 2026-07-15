@@ -10,7 +10,7 @@ import csv
 import re
 import argparse
 from typing import Optional
-from akg import AKGException, akg_logging_config, possible_lfc_names
+from akg import AKGException, akg_logging_config, possible_lfc_names, detect_tracking_columns
 from tracking import check_tracking_writeable, create_tracking, load_tracking, save_tracking, create_empty_tracking_store, add_to_tracking, tracking_entry
 import sys
 
@@ -100,11 +100,7 @@ def process_dataframe(df:pd.DataFrame, sheet_name:str, output_dir:str, file_path
     tdf = create_empty_tracking_store()
 
     df.columns = df.columns.astype(str)
-    log_fold_col = ''
-    for col in df.columns:
-        if any(phrase in re.sub(r'[_\s-]', '', col.lower()) for phrase in possible_lfc_names):
-            log_fold_col = col
-            break
+    _, _, log_fold_col = detect_tracking_columns(df.columns.astype(str).tolist())
     # save the file as .csv but ONLY if a log fold column is found or nominated through the input 
     if log_fold_col or lfc_name:
         if lfc_name:

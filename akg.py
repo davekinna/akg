@@ -41,6 +41,55 @@ def find_first_match(precedence_list:list[str], names_to_check:list[str]) -> str
     # If the loop completes without finding any matches, return None.
     return None
 
+
+def _compact_header_name(value: str) -> str:
+    """Normalize a header name for robust matching across spacing/case variants."""
+    return ''.join(ch for ch in str(value).strip().lower() if ch.isalnum())
+
+
+def detect_tracking_columns(headers: list[str]) -> tuple[str, str, str]:
+    """Infer (gene, pval, lfc) column names from raw headers.
+
+    Returns original header labels for values that are detected.
+    """
+    compacted = [(str(h), _compact_header_name(str(h))) for h in headers]
+
+    def _pick_exact(candidates: list[str]) -> str:
+        for term in candidates:
+            for original, compact in compacted:
+                if compact == term:
+                    return original
+        return ''
+
+    def _pick_contains(candidates: list[str], min_term_len: int = 1) -> str:
+        for term in candidates:
+            if len(term) < min_term_len:
+                continue
+            for original, compact in compacted:
+                if term in compact:
+                    return original
+        return ''
+
+    gene = _pick_exact(possible_gene_names)
+    if not gene:
+        # Keep generic short terms exact-only and use contains matching for stronger identifiers.
+        gene_contains_candidates = [
+            term for term in possible_gene_names
+            if len(term) >= 5 and term not in {'feature'}
+        ]
+        gene = _pick_contains(gene_contains_candidates, min_term_len=5)
+
+    pval = _pick_exact(possible_pval_names)
+    if not pval:
+        # Contains fallback is useful for variants like adjusted_pvalue_score.
+        pval_contains_candidates = [term for term in possible_pval_names if len(term) >= 5]
+        pval = _pick_contains(pval_contains_candidates, min_term_len=5)
+
+    # LFC appears with many prefixes/suffixes (for example avg_logFC), so allow contains matching.
+    lfc = _pick_exact(possible_lfc_names) or _pick_contains(possible_lfc_names, min_term_len=3)
+
+    return gene, pval, lfc
+
 def test_find_no_match():
     """
     Test case for find_first_match with no available names matching.

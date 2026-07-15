@@ -41,7 +41,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QTableWidgetItem, QHeaderView, QSpinBox, 
                              QCheckBox, QComboBox, QMessageBox, QStyle, QLineEdit,
                              QFileDialog, QDialog, QTextBrowser, QTreeWidget,
-                             QTreeWidgetItem, QAbstractItemView)
+                             QTreeWidgetItem, QAbstractItemView, QSizePolicy)
 from PyQt5.QtCore import Qt, pyqtSignal, QPoint, QTimer
 from PyQt5.QtGui import QFont, QColor, QBrush
 
@@ -374,6 +374,7 @@ class ReviewCheckWindow(QMainWindow):
         self.has_unsaved_changes = False
         self.review_position_labels = []
         self._post_show_height_fix_done = False
+        self._startup_width_cap_active = False
 
         if 'manualreason' not in self.tracking_df.columns:
             self.tracking_df['manualreason'] = ''
@@ -725,9 +726,14 @@ class ReviewCheckWindow(QMainWindow):
         # Preview section
         self.preview_header_label = QLabel('Preview (first 20 rows) of:')
         self.preview_header_label.setWordWrap(False)
+        # Allow this label to shrink so long file paths do not expand window minimum width.
+        self.preview_header_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.preview_header_label.setMinimumWidth(0)
         preview_layout.addWidget(self.preview_header_label)
         self.preview_table = QTableWidget()
         self.preview_table.setEditTriggers(QTableWidget.NoEditTriggers)  # Read-only
+        # Allow layouts to shrink table width even when content-driven size hints are large.
+        self.preview_table.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         self.preview_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         preview_header = self.preview_table.horizontalHeader()
         if isinstance(preview_header, QHeaderView):
@@ -1196,7 +1202,22 @@ class ReviewCheckWindow(QMainWindow):
                 self.adjust_preview_table_height()
 
         self.ensure_preview_scrollbar_visible_on_startup()
+        self.release_startup_width_cap()
         self.clamp_window_to_screen()
+
+    def apply_startup_width_cap(self, width_cap: int):
+        """Temporarily force startup width to avoid oversized layout minimum-width hints."""
+        safe_cap = max(900, int(width_cap))
+        self.setFixedWidth(safe_cap)
+        self._startup_width_cap_active = True
+
+    def release_startup_width_cap(self):
+        """Release temporary startup width lock once initial layout settles."""
+        if not self._startup_width_cap_active:
+            return
+        self.setMinimumWidth(0)
+        self.setMaximumWidth(16777215)
+        self._startup_width_cap_active = False
 
     def ensure_preview_scrollbar_visible_on_startup(self):
         """Grow window just enough so preview horizontal scrollbar is not clipped at startup."""
@@ -1246,6 +1267,7 @@ class ReviewCheckWindow(QMainWindow):
             available = screen.availableGeometry()
             target_width = min(target_width, int(available.width() * 0.95))
             target_height = min(target_height, available.height())
+            self.apply_startup_width_cap(target_width)
 
         target_height = min(target_height, self.get_startup_max_height())
 
