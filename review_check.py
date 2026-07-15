@@ -41,7 +41,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QTableWidgetItem, QHeaderView, QSpinBox, 
                              QCheckBox, QComboBox, QMessageBox, QStyle, QLineEdit,
                              QFileDialog, QDialog, QTextBrowser, QTreeWidget,
-                             QTreeWidgetItem, QAbstractItemView, QSizePolicy)
+                             QTreeWidgetItem, QAbstractItemView, QSizePolicy, QSplitter)
 from PyQt5.QtCore import Qt, pyqtSignal, QPoint, QTimer
 from PyQt5.QtGui import QFont, QColor, QBrush
 
@@ -292,6 +292,7 @@ class ReviewCheckWindow(QMainWindow):
     display_order_indices: list[int]
     display_position_by_index: Dict[int, int]
     exclude_all_in_source_checkbox: QCheckBox
+    exclude_all_in_publication_checkbox: QCheckBox
     highlighted_file_leaf_item: Optional[QTreeWidgetItem]
     highlighted_source_item: Optional[QTreeWidgetItem]
     tracking_file_button: QPushButton
@@ -560,11 +561,9 @@ class ReviewCheckWindow(QMainWindow):
         article_layout.setColumnStretch(3, 6)
         article_layout.setColumnStretch(4, 0)
 
-        # Main content grid: left file list, top-right preview, bottom-right metadata
-        content_layout = QGridLayout()
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setHorizontalSpacing(10)
-        content_layout.setVerticalSpacing(10)
+        # Main content area: draggable splitter between left hierarchy and right review panel
+        content_splitter = QSplitter(Qt.Orientation.Horizontal)
+        content_splitter.setChildrenCollapsible(False)
         
         # Left side: file list widget
         left_widget = QWidget()
@@ -576,7 +575,7 @@ class ReviewCheckWindow(QMainWindow):
         left_layout.setContentsMargins(6, 6, 6, 6)
         left_layout.setSpacing(6)
         left_layout.addWidget(QLabel('Supplementary files to review:'))
-        left_widget.setMinimumWidth(760)
+        left_widget.setMinimumWidth(480)
         
         self.file_list = QTreeWidget()
         self.file_list.setHeaderLabels(['PMID', 'Supplementary file', 'Individual table file', 'RowIndex'])
@@ -593,11 +592,7 @@ class ReviewCheckWindow(QMainWindow):
         self.rebuild_file_tree_from_filtered()
         
         left_layout.addWidget(self.file_list)
-        content_layout.addWidget(left_widget, 0, 0, 2, 1)
-
-        # Duplicate navigation row above the right panel
-        top_nav_widget = self.build_navigation_row_widget()
-        content_layout.addWidget(top_nav_widget, 0, 1)
+        content_splitter.addWidget(left_widget)
 
         # Right side: bordered panel for table characteristics + preview
         right_widget = QWidget()
@@ -706,6 +701,10 @@ class ReviewCheckWindow(QMainWindow):
         self.exclude_all_in_source_checkbox.stateChanged.connect(self.on_exclude_all_in_source_changed)
         metadata_layout.addWidget(self.exclude_all_in_source_checkbox, 5, 0, 1, 5, Qt.AlignmentFlag.AlignLeft)
 
+        self.exclude_all_in_publication_checkbox = QCheckBox('Exclude all tables in this publication')
+        self.exclude_all_in_publication_checkbox.stateChanged.connect(self.on_exclude_all_in_publication_changed)
+        metadata_layout.addWidget(self.exclude_all_in_publication_checkbox, 6, 0, 1, 5, Qt.AlignmentFlag.AlignLeft)
+
         self.reason_header_label = QLabel('Exclude reason:')
         metadata_layout.addWidget(self.reason_header_label, 4, 3)
         self.reason_input = QLineEdit()
@@ -744,14 +743,24 @@ class ReviewCheckWindow(QMainWindow):
         right_layout.setStretch(0, 0)
         right_layout.setStretch(1, 1)
 
-        content_layout.addWidget(right_widget, 1, 1)
+        right_container = QWidget()
+        right_container_layout = QVBoxLayout(right_container)
+        right_container_layout.setContentsMargins(0, 0, 0, 0)
+        right_container_layout.setSpacing(10)
 
-        content_layout.setColumnStretch(0, 4)
-        content_layout.setColumnStretch(1, 6)
-        content_layout.setRowStretch(0, 0)
-        content_layout.setRowStretch(1, 1)
+        # Duplicate navigation row above the right panel
+        top_nav_widget = self.build_navigation_row_widget()
+        right_container_layout.addWidget(top_nav_widget)
+        right_container_layout.addWidget(right_widget)
+        right_container_layout.setStretch(0, 0)
+        right_container_layout.setStretch(1, 1)
 
-        main_layout.addLayout(content_layout)
+        content_splitter.addWidget(right_container)
+        content_splitter.setStretchFactor(0, 4)
+        content_splitter.setStretchFactor(1, 6)
+        content_splitter.setSizes([680, 980])
+
+        main_layout.addWidget(content_splitter)
         main_layout.addWidget(article_panel)
         
         # Load initial display
@@ -1029,12 +1038,21 @@ class ReviewCheckWindow(QMainWindow):
             self.exclude_all_in_source_checkbox.blockSignals(True)
             self.exclude_all_in_source_checkbox.setChecked(False)
             self.exclude_all_in_source_checkbox.blockSignals(False)
+        if not self.excl_checkbox.isChecked() and self.exclude_all_in_publication_checkbox.isChecked():
+            self.exclude_all_in_publication_checkbox.blockSignals(True)
+            self.exclude_all_in_publication_checkbox.setChecked(False)
+            self.exclude_all_in_publication_checkbox.blockSignals(False)
         self.pending_excl_values[self.current_index] = bool(self.excl_checkbox.isChecked())
         self.update_dirty_state()
 
     def on_exclude_all_in_source_changed(self, _state):
         """Require per-file exclusion when bulk supplementary-file exclusion is selected."""
         if self.exclude_all_in_source_checkbox.isChecked() and not self.excl_checkbox.isChecked():
+            self.excl_checkbox.setChecked(True)
+
+    def on_exclude_all_in_publication_changed(self, _state):
+        """Require per-file exclusion when bulk publication exclusion is selected."""
+        if self.exclude_all_in_publication_checkbox.isChecked() and not self.excl_checkbox.isChecked():
             self.excl_checkbox.setChecked(True)
 
     def on_reason_changed(self, value):
@@ -1881,6 +1899,9 @@ class ReviewCheckWindow(QMainWindow):
             self.exclude_all_in_source_checkbox.blockSignals(True)
             self.exclude_all_in_source_checkbox.setChecked(False)
             self.exclude_all_in_source_checkbox.blockSignals(False)
+            self.exclude_all_in_publication_checkbox.blockSignals(True)
+            self.exclude_all_in_publication_checkbox.setChecked(False)
+            self.exclude_all_in_publication_checkbox.blockSignals(False)
             self.update_file_tree_highlight(selected_item)
             self.update_display(idx)
 
@@ -2087,14 +2108,18 @@ class ReviewCheckWindow(QMainWindow):
             current_row = self.filtered.iloc[self.current_index]
             excl_checked = self.excl_checkbox.isChecked()
             exclude_all_in_source = self.exclude_all_in_source_checkbox.isChecked()
+            exclude_all_in_publication = self.exclude_all_in_publication_checkbox.isChecked()
             selected_gene = self.gene_choice_combo.currentText().strip()
             selected_pval = self.pval_choice_combo.currentText().strip()
             selected_lfc = self.lfc_choice_combo.currentText().strip()
             selected_reason = self.reason_input.text().strip()
             selected_source = str(current_row.get('source', '')).strip() if pd.notna(current_row.get('source', '')) else ''
+            selected_pmid = normalize_pmid(current_row.get('pmid', ''))
 
             if exclude_all_in_source and not selected_source:
                 raise ValueError('Cannot bulk exclude because the selected row has no supplementary file source')
+            if exclude_all_in_publication and not selected_pmid:
+                raise ValueError('Cannot bulk exclude because the selected row has no PMID/publication')
 
             # Collect exclusion/reason updates from all pending rows.
             excl_reason_updates: Dict[int, Tuple[bool, str]] = {}
@@ -2118,6 +2143,12 @@ class ReviewCheckWindow(QMainWindow):
                 filtered_source_series = self.filtered['source'].fillna('').astype(str).str.strip()
                 bulk_indices = self.filtered.index[filtered_source_series == selected_source].tolist()
                 for idx in bulk_indices:
+                    excl_reason_updates[int(idx)] = (bool(excl_checked), selected_reason)
+
+            if exclude_all_in_publication:
+                filtered_pmid_series = self.filtered['pmid'].map(normalize_pmid)
+                bulk_pub_indices = self.filtered.index[filtered_pmid_series == selected_pmid].tolist()
+                for idx in bulk_pub_indices:
                     excl_reason_updates[int(idx)] = (bool(excl_checked), selected_reason)
 
             if not excl_reason_updates:
@@ -2203,7 +2234,9 @@ class ReviewCheckWindow(QMainWindow):
             excl_status = 'EXCLUDED' if self.excl_checkbox.isChecked() else 'included'
             if show_success_dialog:
                 affected_count = len(affected_original_indices)
-                if exclude_all_in_source:
+                if exclude_all_in_publication:
+                    scope_text = 'all tables in the publication (plus any other pending excludes)'
+                elif exclude_all_in_source:
                     scope_text = 'all tables in the supplementary file (plus any other pending excludes)'
                 elif len(excl_reason_updates) > 1:
                     scope_text = 'all pending excluded files'
@@ -2217,6 +2250,9 @@ class ReviewCheckWindow(QMainWindow):
             self.exclude_all_in_source_checkbox.blockSignals(True)
             self.exclude_all_in_source_checkbox.setChecked(False)
             self.exclude_all_in_source_checkbox.blockSignals(False)
+            self.exclude_all_in_publication_checkbox.blockSignals(True)
+            self.exclude_all_in_publication_checkbox.setChecked(False)
+            self.exclude_all_in_publication_checkbox.blockSignals(False)
             self.update_dirty_state()
             return True
             
