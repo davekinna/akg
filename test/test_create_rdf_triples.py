@@ -48,3 +48,36 @@ def test_process_regular_csv_handles_fully_quoted_rows(tmp_path):
     payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
     assert len(payload) == 2
     assert sorted(payload.values()) == ["row 0", "row 1"]
+
+
+def test_process_regular_csv_allows_missing_graph_file(tmp_path):
+    csv_file = tmp_path / "clean_expdata_demo.csv"
+    csv_file.write_text(
+        "\n".join(
+            [
+                '"gene,pvalue,logfc"',
+                '"ABC1,0.010,1.20"',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    crt.g_filename_uuid_map = _StubFilenameUUIDMap()
+    graph = crt.create_base_graph()
+
+    matched, unmatched = crt.process_regular_csv(
+        str(csv_file),
+        0,
+        0,
+        graph,
+        None,
+        gene_name="gene",
+        pval_name="pvalue",
+        lfc_name="logfc",
+    )
+
+    assert len(graph) > 0
+    assert matched + unmatched == 1
+    # No sidecar should be written when no graph_file is provided.
+    assert not (tmp_path / "clean_expdata_demo.csv.row_uri_labels.json").exists()

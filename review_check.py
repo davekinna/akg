@@ -17,6 +17,7 @@ from typing import Any, Dict, Optional, Tuple
 import pandas as pd
 import requests
 from dotenv import load_dotenv
+from pmid_utils import load_article_metadata_by_pmid, normalize_pmid
 _genai: Any = None
 _PdfReader: Any = None
 try:
@@ -164,57 +165,6 @@ def read_csv_as_dataframe(file_path: str, num_rows: int = 20) -> Optional[pd.Dat
     except Exception as e:
         print(f"Error reading CSV: {e}")
         return None
-
-
-def normalize_pmid(value: Any) -> str:
-    """Normalize PMID value to a comparable string key."""
-    if pd.isna(value):
-        return ''
-    pmid = str(value).strip()
-    if pmid.endswith('.0') and pmid[:-2].isdigit():
-        pmid = pmid[:-2]
-    return pmid
-
-
-def load_article_metadata_by_pmid(metadata_file: str) -> Tuple[Dict[str, Dict[str, str]], str]:
-    """Load article metadata CSV into lookup keyed by normalized PMID.
-
-    Returns:
-        (lookup, status_message)
-    """
-    if not os.path.exists(metadata_file):
-        return {}, f'Article metadata file not found: {metadata_file}. Continuing without article metadata.'
-
-    try:
-        metadata_df = pd.read_csv(metadata_file, keep_default_na=False)
-    except Exception as e:
-        return {}, f'Failed to read article metadata file {metadata_file}: {e}. Continuing without article metadata.'
-
-    column_map = {str(col).strip().lower(): col for col in metadata_df.columns}
-
-    pmid_col = None
-    for candidate in ('pmid', 'pubmed_id', 'pubmedid', 'pubmed id'):
-        if candidate in column_map:
-            pmid_col = column_map[candidate]
-            break
-    if pmid_col is None:
-        return {}, f'Article metadata file {metadata_file} is missing a PMID column.'
-
-    lookup: Dict[str, Dict[str, str]] = {}
-    for _, row in metadata_df.iterrows():
-        pmid_key = normalize_pmid(row.get(pmid_col, ''))
-        if not pmid_key:
-            continue
-        row_dict: Dict[str, str] = {}
-        for col in metadata_df.columns:
-            key = str(col).strip()
-            row_dict[key] = str(row.get(col, '')).strip()
-        lookup[pmid_key] = row_dict
-
-    if not lookup:
-        return {}, f'Article metadata file {metadata_file} loaded but no valid PMID rows were found.'
-
-    return lookup, ''
 
 
 def load_ui_settings(settings_file: str) -> Dict[str, Any]:

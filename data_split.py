@@ -14,7 +14,7 @@ import csv
 import re
 import argparse
 from akg import AKGException, akg_logging_config, detect_tracking_columns
-from tracking import check_tracking_writeable, create_tracking, load_tracking, save_tracking, create_empty_tracking_store, add_to_tracking, tracking_entry
+from tracking import check_tracking_writeable, create_tracking, load_tracking, save_tracking, create_empty_tracking_store, add_to_tracking, tracking_entry, refresh_step0_tracking_entries
 import sys
 
 def process_excel_file(file_path, source_suitable:bool=True, source_suitablereason:str='')->pd.DataFrame:
@@ -283,6 +283,16 @@ if __name__ == '__main__':
         if not check_tracking_writeable(tracking_file):
             logging.error(f"csv_data_cleaning: {tracking_file} must be writable: close it in Excel and try again")
             raise AKGException(f"csv_data_cleaning: {tracking_file} must be writable: close it in Excel and try again")
+
+        # Existing tracking file may be missing newly downloaded step-0 files.
+        existing_tracking = load_tracking(tracking_file)
+        refreshed_tracking = refresh_step0_tracking_entries(existing_tracking, main_dir)
+        if len(refreshed_tracking) != len(existing_tracking):
+            save_tracking(refreshed_tracking, tracking_file)
+            logging.info(
+                "Refreshed tracking with %d new step-0 row(s)",
+                len(refreshed_tracking) - len(existing_tracking),
+            )
 
     supp_data_folder = os.path.join(main_dir,"supp_data")
     process_supp_data_folder(supp_data_folder, tracking_file)

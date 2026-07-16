@@ -87,7 +87,7 @@ def process_metadata_csv(csv_file_path, graph):
             )
 
 
-def process_regular_csv(csv_file_path:str, matched_genes, unmatched_genes, graph, graph_file:str, gene_name:str='', pval_name:str='', lfc_name:str='')-> (int,int):
+def process_regular_csv(csv_file_path:str, matched_genes, unmatched_genes, graph, graph_file:str | None = None, gene_name:str='', pval_name:str='', lfc_name:str='') -> tuple[int, int]:
     """processes the gene expression csv files (not the metadata file).
     Searches for relevant information, converts to triples while adding relevant prefixes.
     Parameters:
@@ -445,7 +445,16 @@ if __name__ == '__main__':
                 else:
                     mg_before = matched_genes
                     ug_before = unmatched_genes
-                    matched_genes, unmatched_genes = process_regular_csv(file_path, matched_genes, unmatched_genes, global_graph)
+                    matched_genes, unmatched_genes = process_regular_csv(
+                        file_path,
+                        matched_genes,
+                        unmatched_genes,
+                        global_graph,
+                        None,
+                        gene_name,
+                        pval_name,
+                        lfc_name,
+                    )
                     global_matched_genes += matched_genes - mg_before
                     global_unmatched_genes += unmatched_genes - ug_before
     

@@ -75,15 +75,49 @@ def create_tracking(folder:str, name:str='akg_tracking.xlsx'):
     # create an empty dataframe
     df = create_empty_tracking_store()
     logging.info(f'Creating a tracking file {name} for the contents of folder:{folder}')
+    discovered = discover_step0_tracking_entries(folder)
+    df = add_to_tracking(df, discovered)
+
+    save_tracking(df, name)
+
+
+def discover_step0_tracking_entries(folder: str) -> pd.DataFrame:
+    """Discover step-0 tracking rows from PMID-named subdirectories in folder."""
+    discovered = create_empty_tracking_store()
     for dirpath, dirnames, filenames in os.walk(folder):
         for filename in filenames:
             pmid = os.path.basename(dirpath)
             # assuming a PMID consists of 8 digits
-            if re.fullmatch(r'\d{8}',pmid):
-                new = tracking_entry(0,dirpath,pmid,filename,False,False,'',False,False,'', 0, '', '', '','', 0, 0,True,'')
-                df = add_to_tracking(df,new)
-                
-    save_tracking(df, name)
+            if re.fullmatch(r'\d{8}', pmid):
+                new = tracking_entry(0, dirpath, pmid, filename, False, False, '', False, False, '', 0, '', '', '', '', 0, 0, True, '')
+                discovered = add_to_tracking(discovered, new)
+    return discovered
+
+
+def refresh_step0_tracking_entries(existing: pd.DataFrame, folder: str) -> pd.DataFrame:
+    """Append any newly discovered step-0 files that are missing from tracking."""
+    discovered = discover_step0_tracking_entries(folder)
+    if discovered.empty:
+        return existing
+
+    existing_step0 = existing[existing['step'] == 0]
+    existing_keys = {
+        (os.path.normpath(str(row['path'])), str(row['file']), int(row['pmid']))
+        for _, row in existing_step0.iterrows()
+    }
+
+    missing_rows = []
+    for _, row in discovered.iterrows():
+        key = (os.path.normpath(str(row['path'])), str(row['file']), int(row['pmid']))
+        if key not in existing_keys:
+            missing_rows.append(row.to_dict())
+
+    if not missing_rows:
+        return existing
+
+    logging.info("Adding %d new step-0 tracking row(s) discovered in %s", len(missing_rows), folder)
+    missing_df = pd.DataFrame(missing_rows)
+    return add_to_tracking(existing, missing_df)
 
 def tracking_entry(step:int, path:str, pmid:str, filename:str, excl:bool, derived:bool, source:str, cleaned:bool, manual:bool, manualreason:str, 
                    skip:int, pval:str, gene:str, lfc:str, graphfile:str, matched:int, unmatched:int, suitable:bool, suitablereason:str)->pd.DataFrame:

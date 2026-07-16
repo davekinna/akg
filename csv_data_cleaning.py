@@ -9,6 +9,13 @@ from akg import AKGException, akg_logging_config
 from tracking import check_tracking_writeable, create_tracking, load_tracking, save_tracking, create_empty_tracking_store, add_to_tracking, tracking_entry
 
 
+def has_existing_step3_for_source(existing_df: pd.DataFrame, pending_df: pd.DataFrame, source_file_path: str) -> bool:
+    """Return True if a step-3 row already exists for the given step-2 source file."""
+    exists = (((existing_df['step'] == 3) & (existing_df['source'] == source_file_path)).any() or
+              ((pending_df['step'] == 3) & (pending_df['source'] == source_file_path)).any())
+    return bool(exists)
+
+
 # TODO: #35 Implement logic to rename the 'ensembl' column
 def rename_ensembl_column(df):
     """finds a column with clear ensembl data and renames the column title
@@ -22,7 +29,7 @@ def rename_ensembl_column(df):
     return df
 
 
-def process_csv_file(file_path)->str:
+def process_csv_file(file_path) -> str | None:
     """Data cleaning for the saved expression info csv files.
     removes rows with multiple blank cells, and removes spaces and characters from column headers.
     """
@@ -76,6 +83,9 @@ def process_data_folder(data_folder:str,  tracking_file:str):
             if excl:
                 logging.info(f"Excluding file: {file_path} manual: {row['manual']} : {row['manualreason']}")
             else:
+                if has_existing_step3_for_source(df, tdf, file_path):
+                    logging.info(f"Skipping file: {file_path} because step 3 rows already exist for this source")
+                    continue
                 if file.endswith('.csv'):
                     logging.info(f"Processing file: {file_path}")
                     new_file_path = process_csv_file(file_path)
