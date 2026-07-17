@@ -12,6 +12,7 @@ import html
 import shutil
 import importlib
 import threading
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 import pandas as pd
@@ -40,7 +41,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QTextEdit, 
                              QLabel, QPushButton, QGridLayout, QTableWidget, 
                              QTableWidgetItem, QHeaderView, QSpinBox, 
-                             QCheckBox, QComboBox, QMessageBox, QStyle, QLineEdit,
+                             QCheckBox, QComboBox, QMessageBox, QStyle,
                              QFileDialog, QDialog, QTextBrowser, QTreeWidget,
                              QTreeWidgetItem, QAbstractItemView, QSizePolicy, QSplitter)
 from PyQt5.QtCore import Qt, pyqtSignal, QPoint, QTimer
@@ -63,6 +64,9 @@ OA_HTTP_TIMEOUT_SECONDS = 20
 PDF_AI_TEXT_MAX_CHARS = 120000
 PDF_AI_MODEL_NAME = 'gemini-2.0-flash'
 PDF_AI_QUESTION_HISTORY_MAX = 30
+EXCLUDE_REASON_HISTORY_MAX = 40
+EXCLUDE_REASON_COMMON_MAX = 20
+LAST_REVIEW_POSITION_KEY = 'last_review_position'
 
 # Field status styles
 FIELD_STYLE_OK = 'color: green; font-weight: bold;'
@@ -212,6 +216,21 @@ def save_oa_pdf_cache(cache_file: str, cache: Dict[str, Dict[str, str]]):
         print(f"Warning: failed to save OA PDF cache to {cache_file}: {e}")
 
 
+def extract_common_exclude_reasons(tracking_df: pd.DataFrame, max_items: int = EXCLUDE_REASON_COMMON_MAX) -> list[str]:
+    """Return most frequent non-empty manual exclude reasons from tracking data."""
+    if 'manualreason' not in tracking_df.columns:
+        return []
+
+    reasons_series = tracking_df['manualreason'].fillna('').astype(str).str.strip()
+    reasons = [reason for reason in reasons_series.tolist() if reason]
+    if not reasons:
+        return []
+
+    counts = Counter(reasons)
+    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0].lower()))
+    return [reason for reason, _ in ordered[:max_items]]
+
+
 class ReviewCheckWindow(QMainWindow):
     """Main window for the review check application"""
     ai_query_result_signal = pyqtSignal(str, str)
@@ -234,6 +253,9 @@ class ReviewCheckWindow(QMainWindow):
     google_api_key: str
     preview_visible_rows: int
     pdf_ai_question_history: list[str]
+    exclude_reason_history: list[str]
+    last_review_position: Dict[str, str]
+    common_exclude_reasons: list[str]
     ai_answer_pmid: str
     review_position_labels: list[QLabel]
     current_article_abstract_text: str
@@ -279,7 +301,12 @@ class ReviewCheckWindow(QMainWindow):
         ui_settings = load_ui_settings(self.settings_file)
         preview_rows_raw = ui_settings.get('preview_visible_rows', DEFAULT_PREVIEW_VISIBLE_ROWS)
         raw_pdf_ai_history = ui_settings.get('pdf_ai_question_history', [])
+        raw_reason_history = ui_settings.get('exclude_reason_history', [])
+        raw_last_review_position = ui_settings.get(LAST_REVIEW_POSITION_KEY, {})
         self.pdf_ai_question_history = []
+        self.exclude_reason_history = []
+        self.last_review_position = raw_last_review_position if isinstance(raw_last_review_position, dict) else {}
+        self.common_exclude_reasons = extract_common_exclude_reasons(self.tracking_df)
         if isinstance(raw_pdf_ai_history, list):
             seen_questions = set()
             for value in raw_pdf_ai_history:
@@ -289,6 +316,16 @@ class ReviewCheckWindow(QMainWindow):
                 seen_questions.add(question)
                 self.pdf_ai_question_history.append(question)
                 if len(self.pdf_ai_question_history) >= PDF_AI_QUESTION_HISTORY_MAX:
+                    break
+        if isinstance(raw_reason_history, list):
+            seen_reasons = set()
+            for value in raw_reason_history:
+                reason = str(value).strip()
+                if not reason or reason in seen_reasons:
+                    continue
+                seen_reasons.add(reason)
+                self.exclude_reason_history.append(reason)
+                if len(self.exclude_reason_history) >= EXCLUDE_REASON_HISTORY_MAX:
                     break
         try:
             self.preview_visible_rows = int(preview_rows_raw)
@@ -302,6 +339,12 @@ class ReviewCheckWindow(QMainWindow):
             settings_updated = True
         if ui_settings.get('pdf_ai_question_history') != self.pdf_ai_question_history:
             ui_settings['pdf_ai_question_history'] = list(self.pdf_ai_question_history)
+            settings_updated = True
+        if ui_settings.get('exclude_reason_history') != self.exclude_reason_history:
+            ui_settings['exclude_reason_history'] = list(self.exclude_reason_history)
+            settings_updated = True
+        if ui_settings.get(LAST_REVIEW_POSITION_KEY) != self.last_review_position:
+            ui_settings[LAST_REVIEW_POSITION_KEY] = dict(self.last_review_position)
             settings_updated = True
         if settings_updated:
             save_ui_settings(self.settings_file, ui_settings)
@@ -532,6 +575,7 @@ class ReviewCheckWindow(QMainWindow):
         self.file_list.setRootIsDecorated(True)
         self.file_list.setAlternatingRowColors(True)
         self.file_list.setUniformRowHeights(True)
+        self.file_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.file_list.setSelectionBehavior(QAbstractItemView.SelectItems)
         self.file_list.setAllColumnsShowFocus(False)
         self.file_list.setStyleSheet(
@@ -649,17 +693,43 @@ class ReviewCheckWindow(QMainWindow):
 
         self.exclude_all_in_source_checkbox = QCheckBox('Exclude all tables in this supplementary file')
         self.exclude_all_in_source_checkbox.stateChanged.connect(self.on_exclude_all_in_source_changed)
-        metadata_layout.addWidget(self.exclude_all_in_source_checkbox, 5, 0, 1, 5, Qt.AlignmentFlag.AlignLeft)
+        metadata_layout.addWidget(self.exclude_all_in_source_checkbox, 5, 0, 1, 4, Qt.AlignmentFlag.AlignLeft)
 
         self.exclude_all_in_publication_checkbox = QCheckBox('Exclude all tables in this publication')
         self.exclude_all_in_publication_checkbox.stateChanged.connect(self.on_exclude_all_in_publication_changed)
-        metadata_layout.addWidget(self.exclude_all_in_publication_checkbox, 6, 0, 1, 5, Qt.AlignmentFlag.AlignLeft)
+        metadata_layout.addWidget(self.exclude_all_in_publication_checkbox, 7, 0, 1, 5, Qt.AlignmentFlag.AlignLeft)
 
         self.reason_header_label = QLabel('Exclude reason:')
         metadata_layout.addWidget(self.reason_header_label, 4, 3)
-        self.reason_input = QLineEdit()
-        self.reason_input.textChanged.connect(self.on_reason_changed)
+        self.reason_input = QComboBox()
+        self.reason_input.setEditable(True)
+        self.reason_input.setInsertPolicy(QComboBox.NoInsert)
+        self.refresh_exclude_reason_dropdown()
+        self.reason_input.editTextChanged.connect(self.on_reason_changed)
+        reason_line_edit = self.reason_input.lineEdit()
+        if reason_line_edit is not None:
+            reason_line_edit.setPlaceholderText('Choose or type an exclude reason...')
         metadata_layout.addWidget(self.reason_input, 4, 4)
+
+        quick_navigation_widget = QWidget()
+        quick_navigation_layout = QHBoxLayout(quick_navigation_widget)
+        quick_navigation_layout.setContentsMargins(0, 0, 0, 0)
+        quick_navigation_layout.setSpacing(6)
+
+        self.reason_prev_button = QPushButton('Previous')
+        self.reason_prev_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.reason_prev_button.clicked.connect(self.on_previous)
+        quick_navigation_layout.addWidget(self.reason_prev_button)
+
+        self.reason_next_button = QPushButton('Next')
+        self.reason_next_button.clicked.connect(self.on_next)
+        quick_navigation_layout.addWidget(self.reason_next_button)
+
+        self.quick_not_de_next_button = QPushButton('Flag as not DE -> Next')
+        self.quick_not_de_next_button.setToolTip("Set reason to 'not differential expression data', exclude this file, then go to next")
+        self.quick_not_de_next_button.clicked.connect(self.on_quick_exclude_not_de_next)
+        quick_navigation_layout.addWidget(self.quick_not_de_next_button)
+        metadata_layout.addWidget(quick_navigation_widget, 5, 3, 1, 2)
 
         metadata_layout.setHorizontalSpacing(14)
         
@@ -681,6 +751,7 @@ class ReviewCheckWindow(QMainWindow):
         preview_layout.addWidget(self.preview_header_label)
         self.preview_table = QTableWidget()
         self.preview_table.setEditTriggers(QTableWidget.NoEditTriggers)  # Read-only
+        self.preview_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         # Allow layouts to shrink table width even when content-driven size hints are large.
         self.preview_table.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         self.preview_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
@@ -712,12 +783,14 @@ class ReviewCheckWindow(QMainWindow):
 
         main_layout.addWidget(content_splitter)
         main_layout.addWidget(article_panel)
+        self.configure_button_tab_order()
         
         # Load initial display
-        initial_idx = self.display_order_indices[0] if self.display_order_indices else 0
+        initial_idx = self.resolve_initial_review_index()
         self.update_display(initial_idx)
         self.select_file_row(initial_idx)
         self.adjust_initial_window_size()
+        QTimer.singleShot(0, lambda: self.reason_next_button.setFocus())
         QTimer.singleShot(0, self.adjust_preview_table_height)
         self.start_oa_pdf_prefetch()
     
@@ -890,7 +963,7 @@ class ReviewCheckWindow(QMainWindow):
         row_reason = str(row.get('manualreason', '')).strip() if pd.notna(row.get('manualreason', '')) else ''
         reason_value = self.pending_reason_values.get(idx, row_reason)
         self.reason_input.blockSignals(True)
-        self.reason_input.setText(reason_value)
+        self.reason_input.setCurrentText(reason_value)
         self.reason_input.blockSignals(False)
         
         # Gene field
@@ -906,15 +979,62 @@ class ReviewCheckWindow(QMainWindow):
         self.apply_field_match_style(self.lfc_header_label, self.lfc_label, 'Log FC column', lfc_col, lfc_found, lfc_count)
         
         self.preview_header_label.setText(f'Preview (first 20 rows) of: {full_path}')
+        self.persist_review_position(idx)
         self.update_dirty_state()
 
     def update_review_position_status(self):
         """Update bottom status text with current review position."""
-        current_one_based = self.current_index + 1
+        current_position = self.display_position_by_index.get(self.current_index, self.current_index)
+        current_one_based = current_position + 1
         total_files = len(self.filtered)
         status_text = f'Reviewing file {current_one_based} out of {total_files}'
         for label in self.review_position_labels:
             label.setText(status_text)
+
+    def get_review_position_identity(self, idx: Optional[int] = None) -> Dict[str, str]:
+        """Return a stable identity for the current or given filtered row."""
+        target_idx = self.current_index if idx is None else idx
+        if target_idx < 0 or target_idx >= len(self.filtered):
+            return {}
+        row = self.filtered.iloc[target_idx]
+        return {
+            'path': str(row.get('path', '')).strip(),
+            'file': str(row.get('file', '')).strip(),
+        }
+
+    def find_filtered_index_by_identity(self, identity: Dict[str, str]) -> Optional[int]:
+        """Locate a filtered row index by stored path/file identity."""
+        path_value = str(identity.get('path', '')).strip()
+        file_value = str(identity.get('file', '')).strip()
+        if not path_value or not file_value:
+            return None
+
+        matches = self.filtered[
+            (self.filtered['path'].astype(str) == path_value) &
+            (self.filtered['file'].astype(str) == file_value)
+        ]
+        if matches.empty:
+            return None
+        return int(matches.index[0])
+
+    def resolve_initial_review_index(self) -> int:
+        """Resolve the row index to show at startup from saved review position."""
+        saved_identity = self.last_review_position if isinstance(self.last_review_position, dict) else {}
+        restored_idx = self.find_filtered_index_by_identity(saved_identity)
+        if restored_idx is not None:
+            return restored_idx
+        return self.display_order_indices[0] if self.display_order_indices else 0
+
+    def persist_review_position(self, idx: Optional[int] = None):
+        """Persist the current review position so it can be restored next session."""
+        identity = self.get_review_position_identity(idx)
+        if not identity:
+            return
+        if identity == self.__dict__.get('last_review_position', {}):
+            return
+        self.last_review_position = identity
+        if 'settings_file' in self.__dict__:
+            self.update_ui_settings({LAST_REVIEW_POSITION_KEY: dict(self.last_review_position)})
 
     def build_navigation_row_widget(self) -> QWidget:
         """Create a navigation controls row widget (status + nav/save/close buttons)."""
@@ -937,28 +1057,48 @@ class ReviewCheckWindow(QMainWindow):
         self.review_position_labels.append(status_label)
         nav_layout.addWidget(status_label)
 
-        prev_button = QPushButton('Previous')
-        prev_button.clicked.connect(self.on_previous)
-        nav_layout.addWidget(prev_button)
+        self.top_prev_button = QPushButton('Previous')
+        self.top_prev_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.top_prev_button.clicked.connect(self.on_previous)
+        nav_layout.addWidget(self.top_prev_button)
 
-        next_button = QPushButton('Next')
-        next_button.clicked.connect(self.on_next)
-        nav_layout.addWidget(next_button)
+        self.top_next_button = QPushButton('Next')
+        self.top_next_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.top_next_button.clicked.connect(self.on_next)
+        nav_layout.addWidget(self.top_next_button)
 
         reset_button = QPushButton('Reset Fields')
         reset_button.clicked.connect(self.on_reset_fields)
         nav_layout.addWidget(reset_button)
 
-        save_button = QPushButton('Save Changes')
-        save_button.clicked.connect(self.on_save_clicked)
-        save_button.setStyleSheet('background-color: #4CAF50; color: white; font-weight: bold;')
-        nav_layout.addWidget(save_button)
+        self.save_button = QPushButton('Save Changes')
+        self.save_button.clicked.connect(self.on_save_clicked)
+        self.save_button.setStyleSheet('background-color: #4CAF50; color: white; font-weight: bold;')
+        nav_layout.addWidget(self.save_button)
 
-        exit_button = QPushButton('Close')
-        exit_button.clicked.connect(self.on_close_clicked)
-        nav_layout.addWidget(exit_button)
+        self.close_button = QPushButton('Close')
+        self.close_button.clicked.connect(self.on_close_clicked)
+        nav_layout.addWidget(self.close_button)
 
         return nav_widget
+
+    def configure_button_tab_order(self):
+        """Set keyboard focus order for the most-used primary action buttons."""
+        if not all(
+            hasattr(self, attr)
+            for attr in (
+                'reason_next_button',
+                'quick_not_de_next_button',
+                'save_button',
+                'close_button',
+            )
+        ):
+            return
+
+        self.setTabOrder(self.reason_next_button, self.quick_not_de_next_button)
+        self.setTabOrder(self.quick_not_de_next_button, self.save_button)
+        self.setTabOrder(self.save_button, self.close_button)
+        self.setTabOrder(self.close_button, self.reason_next_button)
     
     def on_skip_changed(self, value):
         """Handle skip value change - update display live"""
@@ -1012,6 +1152,73 @@ class ReviewCheckWindow(QMainWindow):
             self.excl_checkbox.setChecked(True)
         self.pending_reason_values[self.current_index] = reason_text
         self.update_dirty_state()
+
+    def on_quick_exclude_not_de_next(self):
+        """One-click shortcut: set common exclude reason, exclude file, and advance."""
+        common_reason = 'not differential expression data'
+        self.reason_input.setCurrentText(common_reason)
+        if not self.excl_checkbox.isChecked():
+            self.excl_checkbox.setChecked(True)
+        self.on_next()
+
+    def persist_current_reason_to_history(self):
+        """Capture current reason text into saved suggestions before navigation."""
+        self.add_exclude_reason_to_history(self.get_reason_input_text())
+
+    def get_reason_input_text(self) -> str:
+        """Return reason text from either QComboBox or simple test doubles."""
+        reason_input = self.__dict__.get('reason_input', None)
+        if reason_input is None:
+            return ''
+        if hasattr(reason_input, 'currentText'):
+            return str(reason_input.currentText()).strip()
+        if hasattr(reason_input, 'text'):
+            return str(reason_input.text()).strip()
+        return ''
+
+    def refresh_exclude_reason_dropdown(self):
+        """Refresh exclude-reason dropdown options from history + common reasons."""
+        reason_input = self.__dict__.get('reason_input', None)
+        if reason_input is None:
+            return
+        if not hasattr(reason_input, 'clear') or not hasattr(reason_input, 'addItem'):
+            return
+
+        current_text = self.get_reason_input_text()
+        suggestions = []
+        seen = set()
+        history = list(self.__dict__.get('exclude_reason_history', []))
+        common = list(self.__dict__.get('common_exclude_reasons', []))
+        for reason in history + common:
+            safe_reason = str(reason).strip()
+            if not safe_reason or safe_reason in seen:
+                continue
+            seen.add(safe_reason)
+            suggestions.append(safe_reason)
+
+        if hasattr(reason_input, 'blockSignals'):
+            reason_input.blockSignals(True)
+        reason_input.clear()
+        for reason in suggestions:
+            reason_input.addItem(reason)
+        if hasattr(reason_input, 'setCurrentText'):
+            reason_input.setCurrentText(current_text)
+        if hasattr(reason_input, 'blockSignals'):
+            reason_input.blockSignals(False)
+
+    def add_exclude_reason_to_history(self, reason: str):
+        """Persist recent exclude reasons and keep dropdown suggestions in sync."""
+        safe_reason = reason.strip()
+        if not safe_reason:
+            return
+
+        existing_history = list(self.__dict__.get('exclude_reason_history', []))
+        history = [item for item in existing_history if item != safe_reason]
+        history.insert(0, safe_reason)
+        self.exclude_reason_history = history[:EXCLUDE_REASON_HISTORY_MAX]
+        self.refresh_exclude_reason_dropdown()
+        if 'settings_file' in self.__dict__:
+            self.update_ui_settings({'exclude_reason_history': list(self.exclude_reason_history)})
 
     def on_show_suitablereason(self):
         """Show the suitablereason text for the currently selected supplementary file."""
@@ -1073,7 +1280,7 @@ class ReviewCheckWindow(QMainWindow):
         current_gene = self.gene_choice_combo.currentText().strip()
         current_pval = self.pval_choice_combo.currentText().strip()
         current_lfc = self.lfc_choice_combo.currentText().strip()
-        current_reason = self.reason_input.text().strip()
+        current_reason = self.get_reason_input_text()
 
         if current_skip != int(saved_current.get('skip', current_skip)):
             dirty = True
@@ -1172,6 +1379,12 @@ class ReviewCheckWindow(QMainWindow):
         self.ensure_preview_scrollbar_visible_on_startup()
         self.release_startup_width_cap()
         self.clamp_window_to_screen()
+        self.focus_primary_action_button()
+
+    def focus_primary_action_button(self):
+        """Place keyboard focus on the lower Next button used for rapid review."""
+        if hasattr(self, 'reason_next_button'):
+            self.reason_next_button.setFocus()
 
     def apply_startup_width_cap(self, width_cap: int):
         """Temporarily force startup width to avoid oversized layout minimum-width hints."""
@@ -1216,6 +1429,7 @@ class ReviewCheckWindow(QMainWindow):
             return
         self._post_show_height_fix_done = True
         QTimer.singleShot(100, self.finalize_startup_layout)
+        QTimer.singleShot(180, self.focus_primary_action_button)
 
     def adjust_initial_window_size(self):
         """Auto-size window at startup based on rendered layout and screen limits."""
@@ -1819,6 +2033,7 @@ class ReviewCheckWindow(QMainWindow):
     
     def on_file_selected(self):
         """Handle file list selection"""
+        self.persist_current_reason_to_history()
         selected_items = self.file_list.selectedItems()
         if not selected_items:
             self.update_file_tree_highlight(None)
@@ -1949,6 +2164,8 @@ class ReviewCheckWindow(QMainWindow):
         self.initial_row_values = {}
         self.saved_row_values = {}
         self.has_unsaved_changes = False
+        self.common_exclude_reasons = extract_common_exclude_reasons(self.tracking_df)
+        self.refresh_exclude_reason_dropdown()
 
         for idx_int in range(len(self.filtered)):
             row = self.filtered.iloc[idx_int]
@@ -2062,9 +2279,11 @@ class ReviewCheckWindow(QMainWindow):
             selected_gene = self.gene_choice_combo.currentText().strip()
             selected_pval = self.pval_choice_combo.currentText().strip()
             selected_lfc = self.lfc_choice_combo.currentText().strip()
-            selected_reason = self.reason_input.text().strip()
+            selected_reason = self.get_reason_input_text()
             selected_source = str(current_row.get('source', '')).strip() if pd.notna(current_row.get('source', '')) else ''
             selected_pmid = normalize_pmid(current_row.get('pmid', ''))
+
+            self.add_exclude_reason_to_history(selected_reason)
 
             if exclude_all_in_source and not selected_source:
                 raise ValueError('Cannot bulk exclude because the selected row has no supplementary file source')
@@ -2087,6 +2306,29 @@ class ReviewCheckWindow(QMainWindow):
 
             # Always include current row UI state.
             excl_reason_updates[self.current_index] = (bool(excl_checked), selected_reason)
+
+            # Collect table-column choice updates from all pending rows.
+            column_choice_updates: Dict[int, Tuple[str, str, str]] = {}
+            pending_choice_rows = (
+                set(self.pending_gene_choices.keys()) |
+                set(self.pending_pval_choices.keys()) |
+                set(self.pending_lfc_choices.keys())
+            )
+            for idx in pending_choice_rows:
+                if idx < 0 or idx >= len(self.filtered):
+                    continue
+                saved_row = self.saved_row_values.get(idx, {})
+                row = self.filtered.iloc[idx]
+                row_gene_default = str(saved_row.get('gene', row.get('gene', '') or '')).strip()
+                row_pval_default = str(saved_row.get('pval', row.get('pval', '') or '')).strip()
+                row_lfc_default = str(saved_row.get('lfc', row.get('lfc', '') or '')).strip()
+                row_gene = str(self.pending_gene_choices.get(idx, row_gene_default)).strip()
+                row_pval = str(self.pending_pval_choices.get(idx, row_pval_default)).strip()
+                row_lfc = str(self.pending_lfc_choices.get(idx, row_lfc_default)).strip()
+                column_choice_updates[idx] = (row_gene, row_pval, row_lfc)
+
+            # Always include current row UI state for table-column choices.
+            column_choice_updates[self.current_index] = (selected_gene, selected_pval, selected_lfc)
 
             # Bulk override for all rows in the same supplementary source.
             if exclude_all_in_source:
@@ -2130,11 +2372,22 @@ class ReviewCheckWindow(QMainWindow):
             if not current_original_indices:
                 raise ValueError('The selected file could not be found in the tracking dataframe')
 
-            # Update the tracking dataframe.
+            # Apply pending table-column choices to all edited rows.
+            for filtered_idx, (row_gene, row_pval, row_lfc) in column_choice_updates.items():
+                row = self.filtered.iloc[filtered_idx]
+                row_mask = (
+                    (self.tracking_df['path'] == row['path']) &
+                    (self.tracking_df['file'] == row['file'])
+                )
+                row_original_indices = self.tracking_df.index[row_mask].tolist()
+                if not row_original_indices:
+                    continue
+                self.tracking_df.loc[row_original_indices, 'gene'] = row_gene
+                self.tracking_df.loc[row_original_indices, 'pval'] = row_pval
+                self.tracking_df.loc[row_original_indices, 'lfc'] = row_lfc
+
+            # Skip value is controlled only by the active row spinbox.
             self.tracking_df.loc[current_original_indices, 'skip'] = self.skip_spinbox.value()
-            self.tracking_df.loc[current_original_indices, 'gene'] = selected_gene
-            self.tracking_df.loc[current_original_indices, 'pval'] = selected_pval
-            self.tracking_df.loc[current_original_indices, 'lfc'] = selected_lfc
 
             # Keep filtered copy in sync for in-session navigation.
             affected_filtered_indices = list(excl_reason_updates.keys())
@@ -2153,20 +2406,24 @@ class ReviewCheckWindow(QMainWindow):
                 saved_row['manualreason'] = row_reason
                 self.saved_row_values[filtered_idx] = saved_row
 
-            for filtered_idx in current_filtered_indices:
-                self.filtered.loc[filtered_idx, 'skip'] = self.skip_spinbox.value()
-                self.filtered.loc[filtered_idx, 'gene'] = selected_gene
-                self.filtered.loc[filtered_idx, 'pval'] = selected_pval
-                self.filtered.loc[filtered_idx, 'lfc'] = selected_lfc
-                self.pending_gene_choices[filtered_idx] = selected_gene
-                self.pending_pval_choices[filtered_idx] = selected_pval
-                self.pending_lfc_choices[filtered_idx] = selected_lfc
+            for filtered_idx, (row_gene, row_pval, row_lfc) in column_choice_updates.items():
+                self.filtered.loc[filtered_idx, 'gene'] = row_gene
+                self.filtered.loc[filtered_idx, 'pval'] = row_pval
+                self.filtered.loc[filtered_idx, 'lfc'] = row_lfc
+                self.pending_gene_choices[filtered_idx] = row_gene
+                self.pending_pval_choices[filtered_idx] = row_pval
+                self.pending_lfc_choices[filtered_idx] = row_lfc
 
                 saved_row = dict(self.saved_row_values.get(filtered_idx, {}))
+                saved_row['gene'] = row_gene
+                saved_row['pval'] = row_pval
+                saved_row['lfc'] = row_lfc
+                self.saved_row_values[filtered_idx] = saved_row
+
+            for filtered_idx in current_filtered_indices:
+                self.filtered.loc[filtered_idx, 'skip'] = self.skip_spinbox.value()
+                saved_row = dict(self.saved_row_values.get(filtered_idx, {}))
                 saved_row['skip'] = int(self.skip_spinbox.value())
-                saved_row['gene'] = selected_gene
-                saved_row['pval'] = selected_pval
-                saved_row['lfc'] = selected_lfc
                 self.saved_row_values[filtered_idx] = saved_row
             
             # Save the tracking file
@@ -2273,6 +2530,7 @@ class ReviewCheckWindow(QMainWindow):
     
     def on_next(self):
         """Navigate to next entry"""
+        self.persist_current_reason_to_history()
         if not self.display_order_indices:
             return
         current_pos = self.display_position_by_index.get(self.current_index, 0)
@@ -2282,6 +2540,7 @@ class ReviewCheckWindow(QMainWindow):
     
     def on_previous(self):
         """Navigate to previous entry"""
+        self.persist_current_reason_to_history()
         if not self.display_order_indices:
             return
         current_pos = self.display_position_by_index.get(self.current_index, 0)
