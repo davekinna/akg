@@ -15,13 +15,17 @@ import threading
 from time import perf_counter
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
-from PyQt5.QtCore import QPoint, QPointF, Qt, QTimer, QUrl, pyqtSignal
-from PyQt5.QtGui import QBrush, QColor, QFont, QKeySequence, QPainter, QPen
+from PyQt5.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl, pyqtSignal
+from PyQt5.QtGui import QBrush, QColor, QFont, QImage, QKeySequence, QPainter, QPen
 from PyQt5.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QDoubleSpinBox,
+    QFormLayout,
     QGraphicsEllipseItem,
     QGraphicsItem,
     QGraphicsLineItem,
@@ -316,6 +320,12 @@ class KGExplorerWindow(QMainWindow):
         self._network_legend_table_links: Dict[str, str] = {}
         self._network_table_focus_identifiers: Set[str] = set()
         self._network_table_focus_tables: Set[str] = set()
+        self._network_metric_node_kinds: Dict[str, str] = {}
+        self._network_metric_sig_figs = 5
+        self._network_metric_show_lfc_prefix = True
+        self._network_metric_lfc_prefix = "LFC="
+        self._network_metric_show_pvalue_prefix = True
+        self._network_metric_pvalue_prefix = "p="
         self._scope_publication_tables: Dict[str, List[str]] = {}
         self._scope_table_publication: Dict[str, str] = {}
         self._scope_table_lineages: Dict[str, Set[str]] = {}
@@ -791,6 +801,14 @@ class KGExplorerWindow(QMainWindow):
         fit_button.clicked.connect(self.fit_network_view)
         network_controls_top.addWidget(fit_button)
 
+        network_metric_format_button = QPushButton("Metric labels...")
+        network_metric_format_button.clicked.connect(self.on_network_metric_format_clicked)
+        network_controls_top.addWidget(network_metric_format_button)
+
+        export_network_button = QPushButton("Export SVG/PNG")
+        export_network_button.clicked.connect(self.on_export_network_clicked)
+        network_controls_top.addWidget(export_network_button)
+
         network_layout.addLayout(network_controls_top)
 
         network_controls_modes = QHBoxLayout()
@@ -1147,6 +1165,142 @@ class KGExplorerWindow(QMainWindow):
         self._reset_triples_paging()
         self._render_current_triples_table()
         self._clear_triples_table_selection()
+
+    def on_network_metric_format_clicked(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Network Metric Label Formatting")
+
+        form = QFormLayout(dialog)
+
+        sig_figs_spin = QSpinBox(dialog)
+        sig_figs_spin.setRange(1, 15)
+        sig_figs_spin.setValue(int(self._network_metric_sig_figs))
+        form.addRow("Significant figures", sig_figs_spin)
+
+        lfc_show_checkbox = QCheckBox("Show LFC prefix", dialog)
+        lfc_show_checkbox.setChecked(bool(self._network_metric_show_lfc_prefix))
+        form.addRow(lfc_show_checkbox)
+
+        lfc_prefix_input = QLineEdit(dialog)
+        lfc_prefix_input.setText(self._network_metric_lfc_prefix)
+        form.addRow("LFC prefix text", lfc_prefix_input)
+
+        pvalue_show_checkbox = QCheckBox("Show p-value prefix", dialog)
+        pvalue_show_checkbox.setChecked(bool(self._network_metric_show_pvalue_prefix))
+        form.addRow(pvalue_show_checkbox)
+
+        pvalue_prefix_input = QLineEdit(dialog)
+        pvalue_prefix_input.setText(self._network_metric_pvalue_prefix)
+        form.addRow("p-value prefix text", pvalue_prefix_input)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=dialog)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        form.addRow(button_box)
+
+        if dialog.exec_() != QDialog.Accepted:
+            return
+
+        self._network_metric_sig_figs = int(sig_figs_spin.value())
+        self._network_metric_show_lfc_prefix = bool(lfc_show_checkbox.isChecked())
+        self._network_metric_lfc_prefix = lfc_prefix_input.text()
+        self._network_metric_show_pvalue_prefix = bool(pvalue_show_checkbox.isChecked())
+        self._network_metric_pvalue_prefix = pvalue_prefix_input.text()
+
+        self.refresh_network_view()
+
+    def on_export_network_clicked(self) -> None:
+        export_rect = self._network_export_rect()
+        if export_rect.width() <= 0 or export_rect.height() <= 0:
+            QMessageBox.information(self, "Export Network", "No network content to export.")
+            return
+
+        start_dir = os.path.dirname(self.current_graph_path) if self.current_graph_path else os.getcwd()
+        graph_stem = os.path.splitext(os.path.basename(self.current_graph_path))[0] if self.current_graph_path else "network"
+        default_path = os.path.join(start_dir, f"{graph_stem}_network.svg")
+
+        filename, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Export Network",
+            default_path,
+            "SVG (*.svg);;PNG (*.png)",
+        )
+        if not filename:
+            return
+
+        extension = os.path.splitext(filename)[1].lower()
+        wants_svg = extension == ".svg" or (not extension and selected_filter.startswith("SVG"))
+        wants_png = extension == ".png" or (not extension and selected_filter.startswith("PNG"))
+
+        if not extension:
+            if wants_png:
+                filename = f"{filename}.png"
+                wants_png = True
+                wants_svg = False
+            else:
+                filename = f"{filename}.svg"
+                wants_svg = True
+                wants_png = False
+
+        try:
+            if wants_svg:
+                self._export_network_svg(filename, export_rect)
+            elif wants_png:
+                self._export_network_png(filename, export_rect)
+            else:
+                QMessageBox.warning(self, "Export Network", "Please choose .svg or .png output.")
+                return
+        except Exception as exc:
+            QMessageBox.warning(self, "Export Network", f"Failed to export network: {exc}")
+            return
+
+        self.statusBar().showMessage(f"Network exported: {filename}")
+
+    def _network_export_rect(self) -> QRectF:
+        rect = self.network_scene.itemsBoundingRect()
+        if rect.width() <= 0 or rect.height() <= 0:
+            rect = self.network_scene.sceneRect()
+        if rect.width() <= 0 or rect.height() <= 0:
+            return QRectF()
+
+        margin = 24.0
+        return rect.adjusted(-margin, -margin, margin, margin)
+
+    def _export_network_svg(self, output_path: str, source_rect: QRectF) -> None:
+        try:
+            from PyQt5.QtSvg import QSvgGenerator
+        except ImportError as exc:
+            raise RuntimeError("PyQt5 QtSvg is unavailable in this environment") from exc
+
+        width = max(1, int(math.ceil(source_rect.width())))
+        height = max(1, int(math.ceil(source_rect.height())))
+
+        generator = QSvgGenerator()
+        generator.setFileName(output_path)
+        generator.setTitle("AKG Network Export")
+        generator.setDescription("Network view exported from kg_explorer")
+        generator.setSize(QSize(width, height))
+        generator.setViewBox(QRect(0, 0, width, height))
+
+        painter = QPainter(generator)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        self.network_scene.render(painter, QRectF(0.0, 0.0, float(width), float(height)), source_rect)
+        painter.end()
+
+    def _export_network_png(self, output_path: str, source_rect: QRectF) -> None:
+        width = max(1, int(math.ceil(source_rect.width())))
+        height = max(1, int(math.ceil(source_rect.height())))
+
+        image = QImage(width, height, QImage.Format_ARGB32)
+        image.fill(QColor("#ffffff"))
+
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        self.network_scene.render(painter, QRectF(0.0, 0.0, float(width), float(height)), source_rect)
+        painter.end()
+
+        if not image.save(output_path, "PNG"):
+            raise RuntimeError(f"Could not save PNG file: {output_path}")
 
     def set_predicate_filter_preset(self, predicate: str) -> None:
         self.predicate_filter.setText(predicate)
@@ -2114,13 +2268,19 @@ class KGExplorerWindow(QMainWindow):
             self._network_table_lineages = {}
             self._network_table_children = {}
             self._network_legend_table_links = {}
+            self._network_metric_node_kinds = {}
 
             if not network_triples:
                 self.network_summary_label.setText(f"Nodes: 0 | Edges: 0 ({source_label})")
                 self._set_html_text(self.network_legend_text, "<b>Table legend:</b><br>None")
                 return
 
+            self._network_metric_node_kinds = self._build_network_metric_node_kind_map(network_triples)
+
             def network_label(value: str) -> str:
+                metric_kind = self._network_metric_node_kinds.get(value, "")
+                if metric_kind:
+                    return self._format_network_metric_label(metric_kind, value)
                 return self.graph_service.display_value_with_uuid_context(
                     value,
                     input_dir=self.input_dir,
@@ -2265,6 +2425,39 @@ class KGExplorerWindow(QMainWindow):
         if text.startswith('"') and text.endswith('"') and len(text) >= 2:
             text = text[1:-1]
         return text
+
+    def _format_network_metric_label(self, kind: str, raw_value: str) -> str:
+        metric_value = self._format_metric_value(raw_value)
+        if not metric_value:
+            return ""
+
+        formatted_value = metric_value
+        try:
+            metric_number = float(metric_value)
+            formatted_value = format(metric_number, f".{self._network_metric_sig_figs}g")
+        except (TypeError, ValueError):
+            formatted_value = metric_value
+
+        if kind == "lfc":
+            if self._network_metric_show_lfc_prefix:
+                return f"{self._network_metric_lfc_prefix}{formatted_value}"
+            return formatted_value
+
+        if kind == "pvalue":
+            if self._network_metric_show_pvalue_prefix:
+                return f"{self._network_metric_pvalue_prefix}{formatted_value}"
+            return formatted_value
+
+        return formatted_value
+
+    def _build_network_metric_node_kind_map(self, triples: Iterable[Tuple[str, str, str]]) -> Dict[str, str]:
+        metric_node_kinds: Dict[str, str] = {}
+        for _, predicate, obj in triples:
+            if self._is_logfc_predicate(predicate):
+                metric_node_kinds[obj] = "lfc"
+            elif self._is_pvalue_predicate(predicate):
+                metric_node_kinds[obj] = "pvalue"
+        return metric_node_kinds
 
     @staticmethod
     def _is_publication_node(value: str) -> bool:
@@ -3359,6 +3552,26 @@ class KGExplorerWindow(QMainWindow):
         if isinstance(last_pmid, str):
             self.pmid_input.setText(last_pmid)
 
+        sig_figs = settings.get("network_metric_sig_figs")
+        if isinstance(sig_figs, int) and 1 <= sig_figs <= 15:
+            self._network_metric_sig_figs = sig_figs
+
+        show_lfc_prefix = settings.get("network_metric_show_lfc_prefix")
+        if isinstance(show_lfc_prefix, bool):
+            self._network_metric_show_lfc_prefix = show_lfc_prefix
+
+        lfc_prefix = settings.get("network_metric_lfc_prefix")
+        if isinstance(lfc_prefix, str):
+            self._network_metric_lfc_prefix = lfc_prefix
+
+        show_pvalue_prefix = settings.get("network_metric_show_pvalue_prefix")
+        if isinstance(show_pvalue_prefix, bool):
+            self._network_metric_show_pvalue_prefix = show_pvalue_prefix
+
+        pvalue_prefix = settings.get("network_metric_pvalue_prefix")
+        if isinstance(pvalue_prefix, str):
+            self._network_metric_pvalue_prefix = pvalue_prefix
+
         return startup_graph
 
     def _save_settings(self) -> None:
@@ -3377,6 +3590,11 @@ class KGExplorerWindow(QMainWindow):
         selected = self.query_list.selectedItems()
         settings["last_query_name"] = selected[0].text() if selected else ""
         settings["last_pmid"] = self.pmid_input.text().strip()
+        settings["network_metric_sig_figs"] = int(self._network_metric_sig_figs)
+        settings["network_metric_show_lfc_prefix"] = bool(self._network_metric_show_lfc_prefix)
+        settings["network_metric_lfc_prefix"] = str(self._network_metric_lfc_prefix)
+        settings["network_metric_show_pvalue_prefix"] = bool(self._network_metric_show_pvalue_prefix)
+        settings["network_metric_pvalue_prefix"] = str(self._network_metric_pvalue_prefix)
 
         try:
             with open(self.settings_path, "w", encoding="utf-8") as handle:
