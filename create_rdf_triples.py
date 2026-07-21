@@ -303,6 +303,18 @@ def resolve_per_file_graph_output_path(graph_folder: str, pmid: str, source_file
     os.makedirs(pmid_graph_dir, exist_ok=True)
     graph_file_name = f"graph_{source_filename}.nt"
     return os.path.join(pmid_graph_dir, graph_file_name)
+
+
+def should_skip_per_file_row(row) -> bool:
+    """Skip per-file graph generation when the row already points at an existing graph file."""
+    graphfile = str(row.get('graphfile', '') or '').strip()
+    return bool(graphfile) and os.path.isfile(graphfile)
+
+
+def should_skip_global_graph(graph_folder: str) -> tuple[bool, str]:
+    """Skip rebuilding the global graph when the serialized graph already exists."""
+    global_graph_file = os.path.join(graph_folder, 'main_graph.nt')
+    return os.path.isfile(global_graph_file), global_graph_file
     
 
 
@@ -352,6 +364,7 @@ if __name__ == '__main__':
 
     graph_folder = os.path.join(main_dir, "graph")
     os.makedirs(graph_folder, exist_ok=True)
+    global_graph_file = os.path.join(graph_folder, 'main_graph.nt')
 
     # set up the persistent storage for filename to UUID mapping
     file_to_uuid = 'filename_uuid_map.json'
@@ -379,100 +392,112 @@ if __name__ == '__main__':
     local_tdf = create_empty_tracking_store()
 
     # used by the all-together approach
-    global_graph = create_base_graph()
-
-    # per file means separate graphs for each csv file, to be combined by combine_graphs
-    if per_file:
-        logging.info('per file graph output chosen')
-    elif per_pmid:
-        logging.info('per pmid not yet implemented')
+    skip_global_graph = (not per_file and not per_pmid and should_skip_global_graph(graph_folder)[0])
+    if skip_global_graph:
+        logging.info(
+            "Skipping global graph rebuild because %s already exists",
+            global_graph_file,
+        )
     else:
-        global_csv_count = 0
-        global_matched_genes = 0
-        global_unmatched_genes = 0
+        global_graph = create_base_graph()
 
-        logging.info(f"Processing file: {article_file_path}")
-        process_metadata_csv(article_file_path, global_graph)
+        # per file means separate graphs for each csv file, to be combined by combine_graphs
+        if per_file:
+            logging.info('per file graph output chosen')
+        elif per_pmid:
+            logging.info('per pmid not yet implemented')
+        else:
+            global_csv_count = 0
+            global_matched_genes = 0
+            global_unmatched_genes = 0
 
-    for index, row in tdf.iterrows():
-        # only handle the output of csv_data_cleaning (step 3)
-        if row['step'] == 3:
-            excl = row['excl']
-            root = row['path']
-            file = row['file']
-            pmid = row['pmid']
-            gene_name = row['gene']
-            pval_name = row['pval']
-            lfc_name  = row['lfc']
-            source_suitable = bool(row.get('suitable', True))
-            source_suitablereason = str(row.get('suitablereason', ''))
-            file_path = os.path.join(root, file)
-            if excl:
-                logging.info(f"Excluding file: {file_path} manual: {row['manual']} : {row['manualreason']}")
-            else:
-                logging.info(f"Processing file: {file_path}")
-                if per_file:
-                    graph = create_base_graph()
-                    # add the metadata in to every graph, not big, if requested
-                    if metadata:
-                        logging.info(f"Processing file: {article_file_path}")
-                        process_metadata_csv(article_file_path, graph)
-                    else:
-                        logging.info(f"Skipping metadata processing for file: {article_file_path}")
+            logging.info(f"Processing file: {article_file_path}")
+            process_metadata_csv(article_file_path, global_graph)
 
-                    mg_before = matched_genes
-                    ug_before = unmatched_genes
-                    graph_file = resolve_per_file_graph_output_path(graph_folder, pmid, file)
-                    graph_file_name = os.path.basename(graph_file)
-                    graph_file_dir = os.path.dirname(graph_file)
-
-                    matched_genes, unmatched_genes = process_regular_csv(file_path, matched_genes, unmatched_genes, graph, graph_file, gene_name, pval_name, lfc_name)
-                    logging.info(f"Processing file: {file_path} complete")
-                    logging.info(f"Combined graph has been serialized to {graph_file}")
-                    tdf.loc[index,'graphfile'] = graph_file
-                    tdf.loc[index,'unmatched'] = (unmatched_genes-ug_before)
-                    tdf.loc[index,'matched']   = (matched_genes-mg_before)
-                    # write out the updated information for the source dataset (will have the new files we just wrote out)
-                    # do this inside the loop so that we can keep track of the progress of an aborted run
-                    save_tracking(tdf, tracking_file)
-                    # Add the new file to the local tracking DataFrame
-                    new_entry = tracking_entry(4, graph_file_dir, pmid, graph_file_name, False, True, file_path, False, False, '', 0, '', '', '', graph_file, 0, 0, source_suitable, source_suitablereason)
-
-                    local_tdf = add_to_tracking(local_tdf, new_entry)
-
-                elif per_pmid:
-                    logging.info('per pmid not yet implemented')
-                else:
-                    mg_before = matched_genes
-                    ug_before = unmatched_genes
-                    matched_genes, unmatched_genes = process_regular_csv(
+        for index, row in tdf.iterrows():
+            # only handle the output of csv_data_cleaning (step 3)
+            if row['step'] == 3:
+                excl = row['excl']
+                root = row['path']
+                file = row['file']
+                pmid = row['pmid']
+                gene_name = row['gene']
+                pval_name = row['pval']
+                lfc_name  = row['lfc']
+                source_suitable = bool(row.get('suitable', True))
+                source_suitablereason = str(row.get('suitablereason', ''))
+                file_path = os.path.join(root, file)
+                if excl:
+                    logging.info(f"Excluding file: {file_path} manual: {row['manual']} : {row['manualreason']}")
+                elif per_file and should_skip_per_file_row(row):
+                    logging.info(
+                        "Skipping file: %s because graphfile already exists at %s",
                         file_path,
-                        matched_genes,
-                        unmatched_genes,
-                        global_graph,
-                        None,
-                        gene_name,
-                        pval_name,
-                        lfc_name,
+                        row.get('graphfile', ''),
                     )
-                    global_matched_genes += matched_genes - mg_before
-                    global_unmatched_genes += unmatched_genes - ug_before
-    
-    # add the new entries
-    tdf = add_to_tracking(tdf, local_tdf)
-    
-    # write out the updated information (should have the new files we just wrote out)
-    save_tracking(tdf, tracking_file)
+                else:
+                    logging.info(f"Processing file: {file_path}")
+                    if per_file:
+                        graph = create_base_graph()
+                        # add the metadata in to every graph, not big, if requested
+                        if metadata:
+                            logging.info(f"Processing file: {article_file_path}")
+                            process_metadata_csv(article_file_path, graph)
+                        else:
+                            logging.info(f"Skipping metadata processing for file: {article_file_path}")
 
-    if per_file:
-        pass
-    elif per_pmid:
-        logging.info('per pmid not yet implemented')
-    else:
-        logging.info(f"Processing file: {file_path} complete")
-        global_graph_file = os.path.join(graph_folder, 'main_graph.nt')
-        global_graph.serialize(destination=global_graph_file, format='nt', encoding= "utf-8" )
-        logging.info(f"Combined graph has been serialized to {global_graph_file}")
+                        mg_before = matched_genes
+                        ug_before = unmatched_genes
+                        graph_file = resolve_per_file_graph_output_path(graph_folder, pmid, file)
+                        graph_file_name = os.path.basename(graph_file)
+                        graph_file_dir = os.path.dirname(graph_file)
+
+                        matched_genes, unmatched_genes = process_regular_csv(file_path, matched_genes, unmatched_genes, graph, graph_file, gene_name, pval_name, lfc_name)
+                        logging.info(f"Processing file: {file_path} complete")
+                        logging.info(f"Combined graph has been serialized to {graph_file}")
+                        tdf.loc[index,'graphfile'] = graph_file
+                        tdf.loc[index,'unmatched'] = (unmatched_genes-ug_before)
+                        tdf.loc[index,'matched']   = (matched_genes-mg_before)
+                        # write out the updated information for the source dataset (will have the new files we just wrote out)
+                        # do this inside the loop so that we can keep track of the progress of an aborted run
+                        save_tracking(tdf, tracking_file)
+                        # Add the new file to the local tracking DataFrame
+                        new_entry = tracking_entry(4, graph_file_dir, pmid, graph_file_name, False, True, file_path, False, False, '', 0, '', '', '', graph_file, 0, 0, source_suitable, source_suitablereason)
+
+                        local_tdf = add_to_tracking(local_tdf, new_entry)
+
+                    elif per_pmid:
+                        logging.info('per pmid not yet implemented')
+                    else:
+                        mg_before = matched_genes
+                        ug_before = unmatched_genes
+                        matched_genes, unmatched_genes = process_regular_csv(
+                            file_path,
+                            matched_genes,
+                            unmatched_genes,
+                            global_graph,
+                            None,
+                            gene_name,
+                            pval_name,
+                            lfc_name,
+                        )
+                        global_matched_genes += matched_genes - mg_before
+                        global_unmatched_genes += unmatched_genes - ug_before
+        
+        # add the new entries
+        tdf = add_to_tracking(tdf, local_tdf)
+        
+        # write out the updated information (should have the new files we just wrote out)
+        save_tracking(tdf, tracking_file)
+
+        if per_file:
+            pass
+        elif per_pmid:
+            logging.info('per pmid not yet implemented')
+        else:
+            logging.info(f"Processing file: {file_path} complete")
+            global_graph.serialize(destination=global_graph_file, format='nt', encoding= "utf-8" )
+            logging.info(f"Combined graph has been serialized to {global_graph_file}")
 
 
 # //////////////////////////

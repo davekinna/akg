@@ -235,13 +235,12 @@ class NetworkNodeItem(QGraphicsEllipseItem):
         self.label_item: Optional[QGraphicsSimpleTextItem] = None
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.ItemIsMovable, True)
+        self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, True)
 
     def itemChange(self, change: QGraphicsItem.GraphicsItemChange, value: Any) -> Any:
         if change == QGraphicsItem.ItemPositionHasChanged:
             for edge_item in self.edge_items:
                 edge_item.update_position()
-            if self.label_item is not None:
-                self.label_item.setPos(self.x() - 30, self.y() + self.radius + 2)
         return super().itemChange(change, value)
 
 
@@ -2175,11 +2174,11 @@ class KGExplorerWindow(QMainWindow):
                 node_item.setPos(pos)
                 self.network_scene.addItem(node_item)
 
-                label_item = QGraphicsSimpleTextItem(node.label)
+                label_item = QGraphicsSimpleTextItem(node.label, node_item)
                 label_item.setBrush(QBrush(QColor("#1f2933")))
-                label_item.setPos(pos.x() - 30, pos.y() + NETWORK_NODE_RADIUS + 2)
+                label_rect = label_item.boundingRect()
+                label_item.setPos(-label_rect.width() / 2.0, NETWORK_NODE_RADIUS + 2)
                 label_item.setZValue(3)
-                self.network_scene.addItem(label_item)
                 node_item.label_item = label_item
                 node_items[node.identifier] = node_item
 

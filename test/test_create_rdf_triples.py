@@ -1,11 +1,47 @@
 import json
+from pathlib import Path
+
+import pandas as pd
 
 import create_rdf_triples as crt
+from tracking import create_empty_tracking_store, tracking_entry
 
 
 class _StubFilenameUUIDMap:
     def get_uuid(self, _filename: str) -> str:
         return "00000000-0000-0000-0000-000000000001"
+
+
+def test_should_skip_per_file_row_when_graphfile_exists(tmp_path: Path):
+    graph_file = tmp_path / "graph_clean_expdata_demo.csv.nt"
+    graph_file.write_text("existing graph", encoding="utf-8")
+
+    row = pd.Series({
+        "graphfile": str(graph_file),
+    })
+
+    assert crt.should_skip_per_file_row(row) is True
+
+
+def test_should_skip_per_file_row_when_graphfile_missing(tmp_path: Path):
+    graph_file = tmp_path / "graph_clean_expdata_demo.csv.nt"
+    row = pd.Series({
+        "graphfile": str(graph_file),
+    })
+
+    assert crt.should_skip_per_file_row(row) is False
+
+
+def test_should_skip_global_graph_when_main_graph_exists(tmp_path: Path):
+    graph_folder = tmp_path / "graph"
+    graph_folder.mkdir()
+    main_graph = graph_folder / "main_graph.nt"
+    main_graph.write_text("existing graph", encoding="utf-8")
+
+    should_skip, resolved_path = crt.should_skip_global_graph(str(graph_folder))
+
+    assert should_skip is True
+    assert resolved_path == str(main_graph)
 
 
 def test_process_regular_csv_handles_fully_quoted_rows(tmp_path):
